@@ -106,30 +106,6 @@ npm run preview
 
 ---
 
-## Deployment
-
-AnonShare is a completely static, client-side web application. It requires no application server and can be hosted on any static hosting platform supporting HTTPS.
-
-### GitHub Pages
-
-A ready-to-use GitHub Actions workflow is provided in `.github/workflows/deploy.yml`.
-
-1. Go to your repository settings on GitHub.
-2. Navigate to **Pages** in the left sidebar.
-3. Under **Build and deployment**, set **Source** to **GitHub Actions**.
-4. The site will automatically build and deploy on every push to the `main` branch.
-
-### Vercel / Cloudflare Pages / Netlify
-
-1. Import the repository into your platform of choice.
-2. Build command: `npm run build`
-3. Output directory: `dist`
-4. Deploy.
-
-*Note: A secure context (HTTPS) is mandatory in production. Modern web browsers strictly disable WebRTC, SubtleCrypto, and Clipboard APIs over unencrypted HTTP.*
-
----
-
 ## Security & Privacy Considerations
 
 - **No Central Custody**: No file data, metadata, IP logs, or session tokens are ever sent to or stored on a central server.
