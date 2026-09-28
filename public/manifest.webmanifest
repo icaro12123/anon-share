@@ -1,0 +1,17 @@
+{
+  "name": "AnonShare",
+  "short_name": "AnonShare",
+  "description": "Zero-Server, Zero-Cost Bilateral P2P & Tor Transport",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#090d16",
+  "theme_color": "#090d16",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
