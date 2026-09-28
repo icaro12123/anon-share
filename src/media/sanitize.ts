@@ -6,26 +6,182 @@ import {
   getDeclaredMaxSize
 } from './magic.ts';
 
+export type PreviewMode = 'blurhash' | 'thumbnail';
+export const MAX_THUMBNAIL_BYTES = 8192; // 8 KB max
+
+export interface ThumbnailResult {
+  success: boolean;
+  dataUrl?: string;
+  fallbackToBlurhash?: boolean;
+}
+
 export interface SanitizedMedia {
+  id?: string;
   cleanBytes: Uint8Array;
   mime: SupportedMediaType;
   extension: string;
+  previewMode: PreviewMode;
   blurhash?: string;
+  thumbnailDataUrl?: string;
   declaredMax: number;
   width?: number;
   height?: number;
+  originalName?: string;
+  thumbnailFallbackNotice?: boolean;
+}
+
+export function renderThumbnailDataUrl(
+  sourceCanvas: HTMLCanvasElement | OffscreenCanvas,
+  maxWidth = 120,
+  maxHeight = 90,
+  quality = 0.60
+): string {
+  let w = sourceCanvas.width;
+  let h = sourceCanvas.height;
+  if (w > maxWidth || h > maxHeight) {
+    const ratio = Math.min(maxWidth / w, maxHeight / h);
+    w = Math.max(1, Math.round(w * ratio));
+    h = Math.max(1, Math.round(h * ratio));
+  }
+
+  if (typeof document !== 'undefined') {
+    const thumbCanvas = document.createElement('canvas');
+    thumbCanvas.width = w;
+    thumbCanvas.height = h;
+    const ctx = thumbCanvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Canvas 2D context unavailable');
+    }
+    ctx.drawImage(sourceCanvas as any, 0, 0, w, h);
+    return thumbCanvas.toDataURL('image/jpeg', quality);
+  }
+
+  if (typeof (sourceCanvas as any).toDataURL === 'function') {
+    return (sourceCanvas as any).toDataURL('image/jpeg', quality);
+  }
+
+  throw new Error('Ambiente senza supporto Canvas toDataURL');
+}
+
+/**
+ * Generates a sanitized JPEG micro-thumbnail (<= 8 KB, max 120x90).
+ * If size exceeds 8 KB after second pass (quality 0.45), falls back to blurhash.
+ */
+export function generateSanitizedThumbnail(
+  sourceCanvas: HTMLCanvasElement | OffscreenCanvas,
+  maxWidth = 120,
+  maxHeight = 90
+): ThumbnailResult {
+  try {
+    // 1st pass: 0.60 quality
+    let dataUrl = renderThumbnailDataUrl(sourceCanvas, maxWidth, maxHeight, 0.60);
+    let byteLen = new TextEncoder().encode(dataUrl).length;
+
+    // 2nd pass: 0.45 quality if still > 8192 bytes
+    if (byteLen > MAX_THUMBNAIL_BYTES) {
+      dataUrl = renderThumbnailDataUrl(sourceCanvas, maxWidth, maxHeight, 0.45);
+      byteLen = new TextEncoder().encode(dataUrl).length;
+    }
+
+    if (byteLen > MAX_THUMBNAIL_BYTES || !dataUrl.startsWith('data:image/jpeg;base64,')) {
+      return { success: false, fallbackToBlurhash: true };
+    }
+
+    return { success: true, dataUrl };
+  } catch {
+    return { success: false, fallbackToBlurhash: true };
+  }
+}
+
+/**
+ * Extracts a frame from video at 0.5s on clean canvas and produces a sanitized thumbnail.
+ */
+export async function extractVideoThumbnail(
+  cleanBytes: Uint8Array,
+  mime: SupportedMediaType
+): Promise<ThumbnailResult> {
+  if (typeof document === 'undefined') {
+    return { success: false, fallbackToBlurhash: true };
+  }
+
+  const blob = new Blob([cleanBytes as BlobPart], { type: mime });
+  const objectUrl = URL.createObjectURL(blob);
+
+  return new Promise<ThumbnailResult>((resolve) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+    video.src = objectUrl;
+
+    let resolved = false;
+    const cleanup = () => {
+      URL.revokeObjectURL(objectUrl);
+      video.removeAttribute('src');
+      video.load();
+    };
+
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        cleanup();
+        resolve({ success: false, fallbackToBlurhash: true });
+      }
+    }, 2500);
+
+    video.onloadeddata = () => {
+      video.currentTime = Math.min(0.5, (video.duration || 1) / 2);
+    };
+
+    video.onseeked = () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
+      try {
+        const w = video.videoWidth || 120;
+        const h = video.videoHeight || 90;
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          cleanup();
+          resolve({ success: false, fallbackToBlurhash: true });
+          return;
+        }
+        ctx.drawImage(video, 0, 0, w, h);
+        const res = generateSanitizedThumbnail(canvas);
+        cleanup();
+        resolve(res);
+      } catch {
+        cleanup();
+        resolve({ success: false, fallbackToBlurhash: true });
+      }
+    };
+
+    video.onerror = () => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        cleanup();
+        resolve({ success: false, fallbackToBlurhash: true });
+      }
+    };
+  });
 }
 
 /**
  * Sanitizes an image file using Canvas re-encoding per Section 7:
  * - Eliminates EXIF, GPS, IPTC, XMP, and comments
  * - Computes BlurHash (4x3 components)
+ * - Optionally generates micro-thumbnail if previewMode === 'thumbnail'
  * - Returns clean bytes and metadata
  */
 export async function sanitizeImage(
   rawBytes: Uint8Array,
   mime: SupportedMediaType,
-  _extension: string
+  _extension: string,
+  previewMode: PreviewMode = 'blurhash'
 ): Promise<SanitizedMedia> {
   // 1. Anti-bomb header inspection before rendering
   const { width, height } = validateImageHeaderResolution(rawBytes, mime);
@@ -90,7 +246,22 @@ export async function sanitizeImage(
       // Best effort blurhash
     }
 
-    // 5. Re-encode to clean blob (JPEG 95% or PNG or WebP)
+    // 5. Optional micro-thumbnail generation
+    let thumbnailDataUrl: string | undefined;
+    let finalPreviewMode: PreviewMode = previewMode;
+    let fallbackNotice = false;
+
+    if (previewMode === 'thumbnail') {
+      const thumbResult = generateSanitizedThumbnail(canvas);
+      if (thumbResult.success && thumbResult.dataUrl) {
+        thumbnailDataUrl = thumbResult.dataUrl;
+      } else {
+        finalPreviewMode = 'blurhash';
+        fallbackNotice = true;
+      }
+    }
+
+    // 6. Re-encode to clean blob (JPEG 95% or PNG or WebP)
     let cleanBlob: Blob;
     const exportType = mime === 'image/png' ? 'image/png' : 'image/jpeg';
     const quality = 0.95;
@@ -114,10 +285,13 @@ export async function sanitizeImage(
       cleanBytes,
       mime: exportType as SupportedMediaType,
       extension: exportType === 'image/png' ? 'png' : 'jpg',
+      previewMode: finalPreviewMode,
       blurhash: blurhashStr,
+      thumbnailDataUrl,
       declaredMax: getDeclaredMaxSize(cleanBytes.length),
       width: w,
-      height: h
+      height: h,
+      thumbnailFallbackNotice: fallbackNotice
     };
   } finally {
     URL.revokeObjectURL(objectUrl);
@@ -293,7 +467,10 @@ export function sanitizeMp4(bytes: Uint8Array): Uint8Array {
 /**
  * Main sanitization dispatcher for selected user media file.
  */
-export async function sanitizeMediaFile(file: File): Promise<SanitizedMedia> {
+export async function sanitizeMediaFile(
+  file: File,
+  previewMode: PreviewMode = 'blurhash'
+): Promise<SanitizedMedia> {
   const buffer = await file.arrayBuffer();
   const rawBytes = new Uint8Array(buffer);
 
@@ -301,7 +478,12 @@ export async function sanitizeMediaFile(file: File): Promise<SanitizedMedia> {
   const detected = detectAndValidateMagicBytes(rawBytes);
 
   if (detected.isImage) {
-    return sanitizeImage(rawBytes, detected.mime, detected.extension);
+    const res = await sanitizeImage(rawBytes, detected.mime, detected.extension, previewMode);
+    return {
+      ...res,
+      id: crypto.randomUUID(),
+      originalName: file.name
+    };
   }
 
   let cleanBytes: Uint8Array = rawBytes;
@@ -313,10 +495,29 @@ export async function sanitizeMediaFile(file: File): Promise<SanitizedMedia> {
     cleanBytes = sanitizeMp4(rawBytes) as any;
   }
 
+  let thumbnailDataUrl: string | undefined;
+  let finalPreviewMode: PreviewMode = previewMode;
+  let fallbackNotice = false;
+
+  if (detected.isVideo && previewMode === 'thumbnail') {
+    const thumbRes = await extractVideoThumbnail(cleanBytes, detected.mime);
+    if (thumbRes.success && thumbRes.dataUrl) {
+      thumbnailDataUrl = thumbRes.dataUrl;
+    } else {
+      finalPreviewMode = 'blurhash';
+      fallbackNotice = true;
+    }
+  }
+
   return {
+    id: crypto.randomUUID(),
     cleanBytes,
     mime: detected.mime,
     extension: detected.extension,
-    declaredMax: getDeclaredMaxSize(cleanBytes.length)
+    previewMode: finalPreviewMode,
+    thumbnailDataUrl,
+    declaredMax: getDeclaredMaxSize(cleanBytes.length),
+    originalName: file.name,
+    thumbnailFallbackNotice: fallbackNotice
   };
 }

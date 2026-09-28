@@ -16,8 +16,45 @@ export interface MediaDetectionResult {
 }
 
 export const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB hard limit
+export const MAX_BATCH_FILES = 50;
+export const MAX_BATCH_TOTAL_BYTES = 100 * 1024 * 1024; // 100 MB aggregate hard limit
 export const MAX_PIXEL_DIMENSION = 8192; // 8192 x 8192 max resolution
 export const MAX_TOTAL_PIXELS = 40_000_000; // ~40 megapixels
+
+export const MIME_EXTENSION_MAP: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'video/mp4': 'mp4',
+  'video/webm': 'webm',
+  'audio/mpeg': 'mp3',
+  'audio/flac': 'flac'
+};
+
+export function isMimeSupported(mime: string): boolean {
+  return Object.prototype.hasOwnProperty.call(MIME_EXTENSION_MAP, mime);
+}
+
+export function getSafeExtensionForMime(mime: string): string {
+  const ext = MIME_EXTENSION_MAP[mime];
+  if (!ext) {
+    throw new Error(`MIME type non supportato o non consentito: ${mime}`);
+  }
+  return ext;
+}
+
+export function validateBatchSelection(files: { size: number }[]): void {
+  if (files.length === 0) {
+    throw new Error('Nessun file selezionato.');
+  }
+  if (files.length > MAX_BATCH_FILES) {
+    throw new Error(`Troppi file selezionati (${files.length}). Il limite massimo è di ${MAX_BATCH_FILES} file per batch.`);
+  }
+  const totalSize = files.reduce((acc, f) => acc + f.size, 0);
+  if (totalSize > MAX_BATCH_TOTAL_BYTES) {
+    throw new Error(`La dimensione complessiva (${formatBytes(totalSize)}) supera il limite consentito di 100 MB.`);
+  }
+}
 
 /**
  * Size classes (upper bounds) for declared_max per Section 8:
@@ -242,3 +279,35 @@ export function generateNeutralFileName(extension: string): string {
 
   return `anon_${year}${month}${day}_${randHex}.${extension}`;
 }
+
+/**
+ * Generates neutral local file name for batch files: anon_YYYYMMDD_xxxx_01.ext
+ */
+export function generateIndexedNeutralFileName(index: number, extension: string): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+
+  const randBytes = new Uint8Array(2);
+  crypto.getRandomValues(randBytes);
+  const randHex = (randBytes[0] * 256 + randBytes[1]).toString(16).padStart(4, '0');
+  const idxStr = String(index + 1).padStart(2, '0');
+
+  return `anon_${year}${month}${day}_${randHex}_${idxStr}.${extension}`;
+}
+
+/**
+ * Verifies that the actual file bytes match the declared MIME type via magic bytes.
+ * Throws an error if MIME is unsupported or magic bytes do not match.
+ */
+export function verifyMagicBytesForMime(bytes: Uint8Array, declaredMime: string): void {
+  if (!isMimeSupported(declaredMime)) {
+    throw new Error(`MIME non in allowlist: ${declaredMime}`);
+  }
+  const detected = detectAndValidateMagicBytes(bytes);
+  if (!detected || detected.mime !== declaredMime) {
+    throw new Error(`Magic bytes incoerenti: dichiarati ${declaredMime}, rilevati ${detected?.mime ?? 'sconosciuti'}`);
+  }
+}
+

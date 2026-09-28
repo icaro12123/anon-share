@@ -48,9 +48,13 @@ describe('3-Stage Transfer Protocol (Sections 5, 6, 8)', () => {
       }
     });
 
-    // File contents
+    // File contents with valid magic headers
     const bobFile = new Uint8Array(50000).fill(0x42); // 50 KB
+    bobFile[0] = 0xff; bobFile[1] = 0xd8; bobFile[2] = 0xff; // JPEG magic
+
     const aliceFile = new Uint8Array(35000).fill(0x99); // 35 KB
+    aliceFile[0] = 0x89; aliceFile[1] = 0x50; aliceFile[2] = 0x4e; aliceFile[3] = 0x47;
+    aliceFile[4] = 0x0d; aliceFile[5] = 0x0a; aliceFile[6] = 0x1a; aliceFile[7] = 0x0a; // PNG magic
 
     // Stage 1: Send Offers
     bobProtocol.prepareAndSendOffer({
@@ -169,22 +173,26 @@ describe('3-Stage Transfer Protocol (Sections 5, 6, 8)', () => {
       }
     });
 
+    const validJpeg1 = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 0, 1, 2, 3, 4]);
+    const validJpeg2 = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 0, 5, 6, 7, 8]);
+    const tamperedJpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 0, 9, 9, 9, 9]);
+
     bobProtocol.prepareAndSendOffer({
-      cleanBytes: new Uint8Array([1, 2, 3, 4]),
+      cleanBytes: validJpeg1,
       mime: 'image/jpeg',
       extension: 'jpg',
       declaredMax: 1024
     });
 
     aliceProtocol.prepareAndSendOffer({
-      cleanBytes: new Uint8Array([5, 6, 7, 8]),
+      cleanBytes: validJpeg2,
       mime: 'image/jpeg',
       extension: 'jpg',
       declaredMax: 1024
     });
 
     // Tamper Bob's file payload after commitment has already been offered
-    (bobProtocol as any).localFileBytes = new Uint8Array([9, 9, 9, 9]);
+    (bobProtocol as any).localBatch[0].cleanBytes = tamperedJpeg;
 
     bobProtocol.acceptExchange();
     aliceProtocol.acceptExchange();

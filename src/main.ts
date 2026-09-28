@@ -15,11 +15,15 @@ import { WebRTCConnection } from './webrtc/connection.ts';
 import { sanitizeMediaFile, SanitizedMedia } from './media/sanitize.ts';
 import {
   TransferProtocol,
-  FileOffer,
+  OfferItemPayload,
   CompletedFile,
   TransferProgress
 } from './protocol/transfer.ts';
-import { formatBytes } from './media/magic.ts';
+import {
+  formatBytes,
+  MAX_BATCH_FILES,
+  validateBatchSelection
+} from './media/magic.ts';
 
 // PWA Service Worker Registration
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
@@ -35,7 +39,7 @@ function checkRoute(): { isTorMode: boolean; directSecret: Uint8Array | null } {
 
   // Section 2: Strict behavior on Tor links
   if (path.startsWith('/t/') || path === '/t' || hash.includes('onion=')) {
-    // 1. Remove fragment immediately from history and URL bar
+    // Remove fragment immediately from history and URL bar
     window.history.replaceState(null, '', '/t/');
     return { isTorMode: true, directSecret: null };
   }
@@ -44,7 +48,6 @@ function checkRoute(): { isTorMode: boolean; directSecret: Uint8Array | null } {
   if (hash.includes('secret=')) {
     const params = new URLSearchParams(hash.replace(/^#/, ''));
     const secretHex = params.get('secret');
-    // Clear fragment immediately from URL
     window.history.replaceState(null, '', window.location.pathname);
 
     if (secretHex) {
@@ -69,8 +72,9 @@ let webrtcConn: WebRTCConnection | null = null;
 let transferProto: TransferProtocol | null = null;
 let noiseSession: NoiseSession | null = null;
 
-let localSanitizedFile: SanitizedMedia | null = null;
-let remoteFileOffer: FileOffer | null = null;
+let localRawFiles: Map<string, File> = new Map();
+let localSanitizedFiles: SanitizedMedia[] = [];
+let remoteOfferItems: OfferItemPayload[] = [];
 let sasTimerInterval: ReturnType<typeof setInterval> | null = null;
 let sasSecondsRemaining = 300; // 5 minutes
 
@@ -128,7 +132,7 @@ function renderHomeScreen() {
     <div class="card">
       <div class="card-title">Scambio Bilaterale Riservato P2P</div>
       <p class="text-sm">
-        Scambia file multimediali direttamente tra due browser, senza server di archiviazione, con sanificazione automatica dei metadati e cifratura Noise NNpsk0.
+        Scambia file multimediali direttamente tra due browser, senza server di archiviazione, con sanificazione automatica dei metadati, cifratura Noise NNpsk0 e anteprime selettive.
       </p>
 
       <div class="alert-warning">
@@ -187,10 +191,8 @@ function startRoomSession(roomSecret: Uint8Array, isInitiator: boolean) {
   pool.connect();
 
   if (!isInitiator) {
-    // Alice waiting screen
     renderWaitingScreen(roomUrl, roomTag);
   } else {
-    // Bob connecting screen
     renderInitiatingScreen();
   }
 
@@ -219,7 +221,7 @@ function renderWaitingScreen(roomUrl: string, roomTag: string) {
     <div class="card">
       <div class="card-title">Stanza Creata — In Attesa del Partecipante</div>
       <p class="text-sm">
-        Condividi questo link temporaneo monouso con la persona con cui desideri scambiare il file:
+        Condividi questo link temporaneo monouso con la persona con cui desideri scambiare i file:
       </p>
 
       <div class="input-group">
@@ -273,10 +275,6 @@ function renderInitiatingScreen() {
   };
 }
 
-/**
- * Triggered when Noise NNpsk0 handshake finishes successfully.
- * Enters Section 3.4 Blocking SAS Gate.
- */
 function onHandshakeCompleted(result: NoiseHandshakeResult, isInitiator: boolean, roomTag: string) {
   noiseSession = new NoiseSession(isInitiator, result);
   const sasWords = deriveSasWords(result.h);
@@ -383,10 +381,6 @@ function renderSasGate(sasWords: string[]) {
   };
 }
 
-/**
- * WebRTC DataChannel is ready and Nostr has been cleanly shut down.
- * Entering Section 5: The 3-Stage Exchange.
- */
 function onDataChannelEstablished(isInitiator: boolean) {
   if (sasTimerInterval) clearInterval(sasTimerInterval);
 
@@ -394,9 +388,9 @@ function onDataChannelEstablished(isInitiator: boolean) {
     isInitiator,
     noiseSession: noiseSession!,
     sendRawData: (data) => webrtcConn?.sendData(data),
-    onOfferReceived: (offer) => {
-      remoteFileOffer = offer;
-      updateTeaserDisplay();
+    onBatchOfferReceived: (items) => {
+      remoteOfferItems = items;
+      renderRemoteOfferGrid();
     },
     onStateChange: (state, msg) => {
       const stateEl = document.getElementById('transfer-status-text');
@@ -404,14 +398,19 @@ function onDataChannelEstablished(isInitiator: boolean) {
 
       if (state === 'both_offered') {
         const acceptBtn = document.getElementById('btn-accept-exchange') as HTMLButtonElement;
-        if (acceptBtn) acceptBtn.disabled = false;
+        if (acceptBtn) {
+          acceptBtn.disabled = false;
+          acceptBtn.textContent = `Accetta Scambio (${remoteOfferItems.length} file dal peer)`;
+        }
+      } else if (state === 'waiting_peer_completion') {
+        renderWaitingReciprocalScreen();
       }
     },
     onProgress: (prog) => {
       updateProgressBar(prog);
     },
-    onFileCompleted: (completed) => {
-      renderCompletedScreen(completed);
+    onBatchCompleted: (completedFiles) => {
+      renderCompletedScreen(completedFiles);
     },
     onError: (err) => {
       alert(`Errore scambio: ${err}`);
@@ -419,7 +418,6 @@ function onDataChannelEstablished(isInitiator: boolean) {
     }
   });
 
-  // Connect incoming WebRTC DataChannel messages to the TransferProtocol!
   webrtcConn?.setOnDataMessage((data) => {
     transferProto?.handleIncomingMessage(data);
   });
@@ -433,7 +431,7 @@ function renderTransferScreen() {
 
     <div class="card">
       <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span class="card-title">Scambio Diretto P2P</span>
+        <span class="card-title">Scambio Diretto P2P Multi-Media</span>
         <span class="badge badge-success">Connesso E2EE</span>
       </div>
 
@@ -443,45 +441,49 @@ function renderTransferScreen() {
           <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
         </svg>
         <div>
-          <strong>Trascina un file qui</strong> o clicca per selezionare
-          <div class="text-sm" style="margin-top: 0.3rem;">JPEG, PNG, WebP, MP4, WebM, MP3, FLAC (Max 100 MB)</div>
+          <strong>Trascina file qui</strong> o clicca per selezionare
+          <div class="text-sm" style="margin-top: 0.3rem;">Fino a 50 file (JPEG, PNG, WebP, MP4, WebM, MP3, FLAC - Max 100 MB totali)</div>
         </div>
-        <input type="file" id="file-input" style="display: none;" accept="image/*,video/mp4,video/webm,audio/mpeg,audio/flac" />
+        <input type="file" id="file-input" multiple style="display: none;" accept="image/*,video/mp4,video/webm,audio/mpeg,audio/flac" />
       </div>
 
       <div id="sanitizing-indicator" style="display: none;" class="alert-info">
-        <div class="pulse">Sanificazione metadati in corso (eliminazione EXIF, GPS e rigenerazione canvas)...</div>
+        <div class="pulse">Sanificazione metadati in corso (bonifica EXIF, GPS e rigenerazione canvas)...</div>
       </div>
 
-      <!-- Teaser Row (Section 5 Stage 1) -->
-      <div class="teaser-row">
-        <div class="teaser-box">
-          <strong style="font-size: 0.9rem;">Il Tuo File</strong>
-          <canvas id="my-teaser-canvas" class="teaser-canvas"></canvas>
-          <div id="my-file-info" class="text-sm">Nessun file selezionato</div>
+      <!-- Local Selection List -->
+      <div id="local-batch-section" style="display: none; flex-direction: column; gap: 0.75rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <strong style="font-size: 0.95rem;">I Tuoi File (<span id="local-files-count">0</span>)</strong>
+          <span id="local-batch-total-size" class="text-sm" style="font-family: var(--font-mono);">0 B / 100 MB</span>
         </div>
-
-        <div class="teaser-box">
-          <strong style="font-size: 0.9rem;">File del Peer</strong>
-          <canvas id="peer-teaser-canvas" class="teaser-canvas"></canvas>
-          <div id="peer-file-info" class="text-sm">In attesa del file del peer...</div>
-        </div>
+        <div id="local-batch-list" class="batch-list"></div>
+        <button id="btn-send-offer" class="btn btn-primary btn-block">Invia Offerta Batch al Peer</button>
       </div>
 
-      <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+      <!-- Remote Offer Section -->
+      <div id="remote-batch-section" style="display: none; flex-direction: column; gap: 0.75rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <strong style="font-size: 0.95rem;">File Proposti dal Peer (<span id="remote-files-count">0</span>)</strong>
+          <span id="remote-batch-total-size" class="text-sm" style="font-family: var(--font-mono);"></span>
+        </div>
+        <div id="remote-batch-grid" class="remote-grid"></div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem;">
         <button id="btn-accept-exchange" class="btn btn-success btn-block" disabled>
-          Accetta Scambio Bilaterale
+          In attesa dello scambio delle offerte...
         </button>
         <span id="transfer-status-text" class="text-sm" style="text-align: center;">
-          Seleziona un file per iniziare lo scambio.
+          Seleziona uno o più file per avviare lo scambio.
         </span>
       </div>
 
-      <!-- Progress Section (Stage 3) -->
+      <!-- Progress Section -->
       <div id="progress-section" style="display: none; flex-direction: column; gap: 0.75rem;">
         <div class="progress-container">
           <div style="display: flex; justify-content: space-between;" class="text-sm">
-            <span>Invio Chunk Noise</span>
+            <span>Invio Dati Cifrati</span>
             <span id="send-progress-pct">0%</span>
           </div>
           <div class="progress-bar-bg"><div id="send-progress-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
@@ -489,7 +491,7 @@ function renderTransferScreen() {
 
         <div class="progress-container">
           <div style="display: flex; justify-content: space-between;" class="text-sm">
-            <span>Ricezione Chunk Noise</span>
+            <span>Ricezione Dati Cifrati</span>
             <span id="recv-progress-pct">0%</span>
           </div>
           <div class="progress-bar-bg"><div id="recv-progress-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
@@ -503,8 +505,9 @@ function renderTransferScreen() {
 
   dropzone.onclick = () => fileInput.click();
   fileInput.onchange = async () => {
-    if (fileInput.files?.[0]) {
-      await handleFileSelection(fileInput.files[0]);
+    if (fileInput.files && fileInput.files.length > 0) {
+      await handleFilesAdded(Array.from(fileInput.files));
+      fileInput.value = '';
     }
   };
 
@@ -516,9 +519,13 @@ function renderTransferScreen() {
   dropzone.ondrop = async (e) => {
     e.preventDefault();
     dropzone.classList.remove('dragover');
-    if (e.dataTransfer?.files?.[0]) {
-      await handleFileSelection(e.dataTransfer.files[0]);
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      await handleFilesAdded(Array.from(e.dataTransfer.files));
     }
+  };
+
+  document.getElementById('btn-send-offer')!.onclick = () => {
+    sendLocalBatchOffer();
   };
 
   document.getElementById('btn-accept-exchange')!.onclick = () => {
@@ -533,83 +540,229 @@ function renderTransferScreen() {
   };
 }
 
-async function handleFileSelection(file: File) {
+async function handleFilesAdded(newFiles: File[]) {
+  if (localSanitizedFiles.length + newFiles.length > MAX_BATCH_FILES) {
+    alert(`Puoi selezionare al massimo ${MAX_BATCH_FILES} file per batch.`);
+    return;
+  }
+
+  const allFiles = [...localSanitizedFiles.map((s) => ({ size: s.cleanBytes.length })), ...newFiles];
+  try {
+    validateBatchSelection(allFiles);
+  } catch (err: any) {
+    alert(err.message);
+    return;
+  }
+
   const sanitizeInd = document.getElementById('sanitizing-indicator');
   if (sanitizeInd) sanitizeInd.style.display = 'block';
 
   try {
-    localSanitizedFile = await sanitizeMediaFile(file);
-    if (sanitizeInd) sanitizeInd.style.display = 'none';
-
-    // Update local teaser UI
-    const myInfo = document.getElementById('my-file-info');
-    if (myInfo) {
-      myInfo.textContent = `${formatBytes(localSanitizedFile.cleanBytes.length)} (${localSanitizedFile.mime})`;
+    for (const file of newFiles) {
+      const sanitized = await sanitizeMediaFile(file, 'blurhash');
+      const fileId = sanitized.id || crypto.randomUUID();
+      sanitized.id = fileId;
+      localRawFiles.set(fileId, file);
+      localSanitizedFiles.push(sanitized);
     }
-
-    if (localSanitizedFile.blurhash) {
-      drawBlurhashToCanvas('my-teaser-canvas', localSanitizedFile.blurhash);
-    } else {
-      drawPlaceholderToCanvas('my-teaser-canvas', localSanitizedFile.mime);
-    }
-
-    // Send Offer via Noise DataChannel
-    transferProto?.prepareAndSendOffer({
-      cleanBytes: localSanitizedFile.cleanBytes,
-      mime: localSanitizedFile.mime,
-      extension: localSanitizedFile.extension,
-      blurhash: localSanitizedFile.blurhash,
-      declaredMax: localSanitizedFile.declaredMax
-    });
   } catch (err: any) {
+    alert(`Errore elaborazione file: ${err.message}`);
+  } finally {
     if (sanitizeInd) sanitizeInd.style.display = 'none';
-    alert(`Errore file: ${err.message}`);
+  }
+
+  renderLocalBatchList();
+}
+
+function renderLocalBatchList() {
+  const section = document.getElementById('local-batch-section');
+  const countEl = document.getElementById('local-files-count');
+  const totalSizeEl = document.getElementById('local-batch-total-size');
+  const listEl = document.getElementById('local-batch-list');
+
+  if (!section || !countEl || !totalSizeEl || !listEl) return;
+
+  if (localSanitizedFiles.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'flex';
+  countEl.textContent = String(localSanitizedFiles.length);
+  const totalBytes = localSanitizedFiles.reduce((acc, f) => acc + f.cleanBytes.length, 0);
+  totalSizeEl.textContent = `${formatBytes(totalBytes)} / 100 MB`;
+
+  listEl.innerHTML = '';
+
+  localSanitizedFiles.forEach((file, idx) => {
+    const card = document.createElement('div');
+    card.className = 'batch-item-card';
+
+    // Preview element
+    const previewBox = document.createElement('div');
+    previewBox.className = 'batch-item-preview';
+
+    if (file.previewMode === 'thumbnail' && file.thumbnailDataUrl) {
+      const img = document.createElement('img');
+      img.src = file.thumbnailDataUrl;
+      previewBox.appendChild(img);
+    } else if (file.blurhash) {
+      const canvas = document.createElement('canvas');
+      renderBlurhashCanvas(canvas, file.blurhash);
+      previewBox.appendChild(canvas);
+    } else {
+      const badge = document.createElement('span');
+      badge.textContent = file.mime.startsWith('audio/') ? '🎵' : '📄';
+      badge.style.fontSize = '1.25rem';
+      previewBox.appendChild(badge);
+    }
+
+    // Info element
+    const infoBox = document.createElement('div');
+    infoBox.className = 'batch-item-info';
+    infoBox.innerHTML = `
+      <div class="batch-item-name" title="${file.originalName || file.extension}">${file.originalName || `File ${idx + 1}`}</div>
+      <div class="batch-item-meta">${formatBytes(file.cleanBytes.length)} · ${file.mime}</div>
+    `;
+
+    // Actions element
+    const actionsBox = document.createElement('div');
+    actionsBox.className = 'batch-item-actions';
+
+    const isImageOrVideo = file.mime.startsWith('image/') || file.mime.startsWith('video/');
+    if (isImageOrVideo) {
+      const toggleBtn = document.createElement('button');
+      toggleBtn.className = `toggle-preview-btn ${file.previewMode === 'thumbnail' ? 'active' : ''}`;
+      toggleBtn.innerHTML = file.previewMode === 'thumbnail' ? '👁️ Miniatura Chiara' : '🔒 Sfocata (BlurHash)';
+
+      const hintText = document.createElement('span');
+      hintText.className = 'toggle-preview-hint';
+      if (file.thumbnailFallbackNotice) {
+        hintText.textContent = 'Miniatura troppo complessa (> 8 KB): impostata anteprima sfocata standard';
+      } else {
+        hintText.textContent = "L'altra persona vedrà questa immagine prima di accettare lo scambio";
+      }
+
+      toggleBtn.onclick = async () => {
+        const rawFile = localRawFiles.get(file.id!);
+        if (!rawFile) return;
+
+        const newMode = file.previewMode === 'thumbnail' ? 'blurhash' : 'thumbnail';
+        const updated = await sanitizeMediaFile(rawFile, newMode);
+        updated.id = file.id;
+        localSanitizedFiles[idx] = updated;
+        renderLocalBatchList();
+      };
+
+      actionsBox.appendChild(toggleBtn);
+      actionsBox.appendChild(hintText);
+    }
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'btn-remove-item';
+    removeBtn.innerHTML = '✕';
+    removeBtn.title = 'Rimuovi file';
+    removeBtn.onclick = () => {
+      localRawFiles.delete(file.id!);
+      localSanitizedFiles.splice(idx, 1);
+      renderLocalBatchList();
+    };
+    actionsBox.appendChild(removeBtn);
+
+    card.appendChild(previewBox);
+    card.appendChild(infoBox);
+    card.appendChild(actionsBox);
+    listEl.appendChild(card);
+  });
+}
+
+function sendLocalBatchOffer() {
+  if (localSanitizedFiles.length === 0) {
+    alert('Aggiungi almeno un file per inviare l offerta.');
+    return;
+  }
+
+  const items = localSanitizedFiles.map((f) => ({
+    cleanBytes: f.cleanBytes,
+    mime: f.mime,
+    previewMode: f.previewMode,
+    blurhash: f.blurhash,
+    thumbnailDataUrl: f.thumbnailDataUrl,
+    declaredMax: f.declaredMax
+  }));
+
+  try {
+    transferProto?.prepareAndSendBatchOffer(items);
+    const sendBtn = document.getElementById('btn-send-offer') as HTMLButtonElement;
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.textContent = '✓ Offerta Inviata';
+    }
+  } catch (err: any) {
+    alert(err.message);
   }
 }
 
-function updateTeaserDisplay() {
-  if (!remoteFileOffer) return;
+function renderRemoteOfferGrid() {
+  const section = document.getElementById('remote-batch-section');
+  const countEl = document.getElementById('remote-files-count');
+  const totalSizeEl = document.getElementById('remote-batch-total-size');
+  const gridEl = document.getElementById('remote-batch-grid');
 
-  const peerInfo = document.getElementById('peer-file-info');
-  if (peerInfo) {
-    peerInfo.textContent = `Tetto: ${formatBytes(remoteFileOffer.declaredMax)} (${remoteFileOffer.mime})`;
-  }
+  if (!section || !countEl || !totalSizeEl || !gridEl) return;
 
-  if (remoteFileOffer.blurhash) {
-    drawBlurhashToCanvas('peer-teaser-canvas', remoteFileOffer.blurhash);
-  } else {
-    drawPlaceholderToCanvas('peer-teaser-canvas', remoteFileOffer.mime);
-  }
+  section.style.display = 'flex';
+  countEl.textContent = String(remoteOfferItems.length);
+  const totalDeclared = remoteOfferItems.reduce((acc, it) => acc + it.declaredMax, 0);
+  totalSizeEl.textContent = `Tetto max dichiarato: ${formatBytes(totalDeclared)}`;
+
+  gridEl.innerHTML = '';
+
+  remoteOfferItems.forEach((item, idx) => {
+    const card = document.createElement('div');
+    card.className = 'remote-card';
+
+    const previewBox = document.createElement('div');
+    previewBox.className = 'remote-preview-box';
+
+    // RIGID RECEIVER SECURITY: Assign thumbnails ONLY to img.src, NEVER innerHTML
+    if (item.previewMode === 'thumbnail' && item.thumbnailDataUrl) {
+      const img = document.createElement('img');
+      img.src = item.thumbnailDataUrl;
+      previewBox.appendChild(img);
+    } else if (item.blurhash) {
+      const canvas = document.createElement('canvas');
+      renderBlurhashCanvas(canvas, item.blurhash);
+      previewBox.appendChild(canvas);
+    } else {
+      const badge = document.createElement('span');
+      badge.textContent = item.mime.startsWith('audio/') ? '🎵' : '📄';
+      badge.style.fontSize = '1.5rem';
+      previewBox.appendChild(badge);
+    }
+
+    const badgeLabel = item.previewMode === 'thumbnail' ? '👁️ Chiara' : '🔒 Sfocata';
+
+    card.innerHTML = `
+      <div class="text-sm" style="font-weight: 600;">File ${idx + 1}</div>
+      <div class="badge ${item.previewMode === 'thumbnail' ? 'badge-direct' : ''}" style="font-size: 0.72rem;">${badgeLabel}</div>
+      <div class="text-sm" style="font-size: 0.75rem; color: var(--text-muted);">
+        ${formatBytes(item.declaredMax)}<br/>${item.mime}
+      </div>
+    `;
+
+    card.insertBefore(previewBox, card.firstChild);
+    gridEl.appendChild(card);
+  });
 }
 
-function drawPlaceholderToCanvas(canvasId: string, mime: string) {
-  const canvas = document.getElementById(canvasId) as HTMLCanvasElement;
-  if (!canvas) return;
-  canvas.width = 128;
-  canvas.height = 96;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#38bdf8';
-  ctx.font = 'bold 14px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const label = mime.startsWith('video/') ? '🎬 Video' : mime.startsWith('audio/') ? '🎵 Audio' : '📄 File';
-  ctx.fillText(label, canvas.width / 2, canvas.height / 2);
-}
-
-function drawBlurhashToCanvas(canvasId: string, blurhashStr: string) {
-  const canvas = document.getElementById(canvasId) as HTMLCanvasElement;
-  if (!canvas) return;
-
+function renderBlurhashCanvas(canvas: HTMLCanvasElement, blurhashStr: string) {
   const w = 64;
   const h = 48;
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-
   try {
     const pixels = decodeBlurhash(blurhashStr, w, h);
     const imgData = ctx.createImageData(w, h);
@@ -629,7 +782,7 @@ function updateProgressBar(prog: TransferProgress) {
   const sendTxt = document.getElementById('send-progress-pct');
   if (sendBar && sendTxt) {
     sendBar.style.width = `${sendPct}%`;
-    sendTxt.textContent = `${sendPct}% (${formatBytes(prog.bytesSent)})`;
+    sendTxt.textContent = `${sendPct}% (${formatBytes(prog.bytesSent)} / ${formatBytes(prog.totalToSend)})`;
   }
 
   const recvBar = document.getElementById('recv-progress-bar');
@@ -640,45 +793,102 @@ function updateProgressBar(prog: TransferProgress) {
   }
 }
 
-function renderCompletedScreen(completed: CompletedFile) {
-  const blobUrl = URL.createObjectURL(completed.blob);
+function renderWaitingReciprocalScreen() {
+  appEl.innerHTML = `
+    ${renderHeader()}
 
-  // Render sandboxed iframe preview per Section 8
-  let previewHtml = '';
-  if (completed.mime.startsWith('image/')) {
-    previewHtml = `<img src="${blobUrl}" style="max-width: 100%; max-height: 350px; border-radius: var(--radius-md); object-fit: contain;" />`;
-  } else if (completed.mime.startsWith('video/')) {
-    previewHtml = `<video controls src="${blobUrl}" style="max-width: 100%; max-height: 350px; border-radius: var(--radius-md);"></video>`;
-  } else if (completed.mime.startsWith('audio/')) {
-    previewHtml = `<audio controls src="${blobUrl}" style="width: 100%;"></audio>`;
-  }
+    <div class="card">
+      <div class="reciprocal-wait-box">
+        <div class="pulse" style="width: 32px; height: 32px; border-radius: 50%; background: var(--accent-cyan);"></div>
+        <div class="card-title">Ricezione completata. In attesa del completamento del peer...</div>
+        <div class="reciprocal-wait-warning">
+          Se la connessione cade adesso, nessuno dei due terrà i file.
+        </div>
+        <p class="text-sm">
+          Questo cancello reciproco riduce l'asimmetria tra i due utenti nel caso di client non manomessi; non è un meccanismo atomico.
+          I tuoi file ricevuti sono custoditi in memoria e verranno sbloccati simultaneamente non appena anche la controparte avrà confermato la ricezione integrale.
+        </p>
+      </div>
+    </div>
+  `;
+}
+
+function renderCompletedScreen(completedFiles: CompletedFile[]) {
+  const blobUrls: string[] = [];
+
+  const itemsHtml = completedFiles
+    .map((file) => {
+      const blobUrl = URL.createObjectURL(file.blob);
+      blobUrls.push(blobUrl);
+
+      let mediaEl = '';
+      if (file.mime.startsWith('image/')) {
+        mediaEl = `<img src="${blobUrl}" class="gallery-media-preview" />`;
+      } else if (file.mime.startsWith('video/')) {
+        mediaEl = `<video controls src="${blobUrl}" class="gallery-media-preview"></video>`;
+      } else if (file.mime.startsWith('audio/')) {
+        mediaEl = `<audio controls src="${blobUrl}" style="width: 100%;"></audio>`;
+      }
+
+      return `
+        <div class="gallery-card">
+          ${mediaEl}
+          <div class="text-sm" style="font-family: var(--font-mono); text-align: center;">
+            <strong>${file.name}</strong><br/>
+            ${formatBytes(file.size)} · ${file.mime}
+          </div>
+          <a href="${blobUrl}" download="${file.name}" class="btn btn-secondary btn-block">
+            Scarica File
+          </a>
+        </div>
+      `;
+    })
+    .join('');
 
   appEl.innerHTML = `
     ${renderHeader()}
 
-    <div class="card" style="text-align: center;">
-      <div class="badge badge-success" style="align-self: center;">✓ Scambio Concluso con Successo</div>
-      <div class="card-title">File Ricevuto e Verificato</div>
-
-      <div style="background: rgba(0,0,0,0.3); padding: 1.25rem; border-radius: var(--radius-md); display: flex; flex-direction: column; align-items: center; gap: 1rem;">
-        ${previewHtml}
-        <div class="text-sm" style="font-family: var(--font-mono);">
-          <strong>${completed.name}</strong><br/>
-          ${formatBytes(completed.size)} · ${completed.mime}
-        </div>
+    <div class="card">
+      <div style="text-align: center; display: flex; flex-direction: column; gap: 0.5rem; align-items: center;">
+        <div class="badge badge-success">✓ Scambio Concluso con Successo</div>
+        <div class="card-title">File Ricevuti e Verificati (${completedFiles.length})</div>
       </div>
 
-      <a href="${blobUrl}" download="${completed.name}" class="btn btn-primary btn-block">
-        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-        Scarica File Sanificato
-      </a>
+      <div class="gallery-grid">
+        ${itemsHtml}
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem;">
+        <button id="btn-download-all" class="btn btn-primary btn-block">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+          Scarica Tutti i File (${completedFiles.length})
+        </button>
+        <span class="text-sm" style="text-align: center; color: var(--text-muted); font-size: 0.8rem;">
+          Nota: se il browser richiede l'autorizzazione per scaricare più file contemporaneamente, seleziona 'Consenti'.
+        </span>
+      </div>
 
       <button id="btn-done" class="btn btn-secondary btn-block">Chiudi Sessione</button>
     </div>
   `;
 
+  document.getElementById('btn-download-all')!.onclick = () => {
+    completedFiles.forEach((file, idx) => {
+      setTimeout(() => {
+        const a = document.createElement('a');
+        const url = URL.createObjectURL(file.blob);
+        a.href = url;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      }, idx * 200);
+    });
+  };
+
   document.getElementById('btn-done')!.onclick = () => {
-    URL.revokeObjectURL(blobUrl);
+    blobUrls.forEach((url) => URL.revokeObjectURL(url));
     resetToHome();
   };
 }
@@ -699,8 +909,9 @@ function resetToHome() {
   pool = null;
   identity = null;
   noiseSession = null;
-  localSanitizedFile = null;
-  remoteFileOffer = null;
+  localRawFiles.clear();
+  localSanitizedFiles = [];
+  remoteOfferItems = [];
 
   renderHomeScreen();
 }
