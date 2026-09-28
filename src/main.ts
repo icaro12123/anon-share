@@ -255,7 +255,8 @@ function renderHomeScreen() {
 function startRoomSession(roomSecret: Uint8Array, isInitiator: boolean) {
   const { noisePsk, roomTag } = deriveDirectKeys(roomSecret);
   const secretHex = toHex(roomSecret);
-  const roomUrl = `${window.location.origin}/#direct&secret=${secretHex}`;
+  const baseUrl = window.location.href.split('#')[0].replace(/\/index\.html$/, '').replace(/\/$/, '');
+  const roomUrl = `${baseUrl}/#direct&secret=${secretHex}`;
 
   identity = new NostrIdentity();
   pool = new NostrRelayPool();
