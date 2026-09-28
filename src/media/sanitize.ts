@@ -1,4 +1,5 @@
 import { encode as encodeBlurhash } from 'blurhash';
+import { generateUUID } from '../crypto/keys.ts';
 import {
   SupportedMediaType,
   detectAndValidateMagicBytes,
@@ -481,7 +482,7 @@ export async function sanitizeMediaFile(
     const res = await sanitizeImage(rawBytes, detected.mime, detected.extension, previewMode);
     return {
       ...res,
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       originalName: file.name
     };
   }
@@ -510,7 +511,7 @@ export async function sanitizeMediaFile(
   }
 
   return {
-    id: crypto.randomUUID(),
+    id: generateUUID(),
     cleanBytes,
     mime: detected.mime,
     extension: detected.extension,

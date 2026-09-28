@@ -5,7 +5,9 @@ import {
   deriveDirectKeys,
   deriveSasWords,
   toHex,
-  fromHex
+  fromHex,
+  generateUUID,
+  copyToClipboard
 } from './crypto/keys.ts';
 import { NoiseSession, NoiseHandshakeResult } from './crypto/noise.ts';
 import { NostrRelayPool, NostrIdentity } from './nostr/nostr.ts';
@@ -329,10 +331,10 @@ function renderWaitingScreen(roomUrl: string, roomTag: string) {
 
   bindHeaderEvents();
 
-  document.getElementById('btn-copy-url')!.onclick = () => {
-    navigator.clipboard.writeText(roomUrl);
+  document.getElementById('btn-copy-url')!.onclick = async () => {
+    const ok = await copyToClipboard(roomUrl);
     const btn = document.getElementById('btn-copy-url')!;
-    btn.textContent = 'Copiato!';
+    btn.textContent = ok ? 'Copiato!' : 'Errore';
     setTimeout(() => (btn.textContent = 'Copia'), 2000);
   };
 
@@ -499,18 +501,15 @@ function onDataChannelEstablished(isInitiator: boolean) {
     onBatchOfferReceived: (items) => {
       remoteOfferItems = items;
       renderRemoteOfferGrid();
+      updateExchangeDockUI();
     },
     onStateChange: (state, msg) => {
       const stateEl = document.getElementById('transfer-status-text');
       if (stateEl && msg) stateEl.textContent = msg;
 
-      if (state === 'both_offered') {
-        const acceptBtn = document.getElementById('btn-accept-exchange') as HTMLButtonElement;
-        if (acceptBtn) {
-          acceptBtn.disabled = false;
-          acceptBtn.textContent = `Accetta Scambio (${remoteOfferItems.length} file dal peer)`;
-        }
-      } else if (state === 'waiting_peer_completion') {
+      updateExchangeDockUI();
+
+      if (state === 'waiting_peer_completion') {
         renderWaitingReciprocalScreen();
       }
     },
@@ -537,7 +536,7 @@ function renderTransferScreen() {
   appEl.innerHTML = `
     ${renderHeader()}
 
-    <div class="card" style="padding: 18px;">
+    <div class="card" style="padding: 18px; padding-bottom: 140px;">
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <div>
           <div class="terminal-sub">>_ CANALE DIRETTO WEBRTC</div>
@@ -574,7 +573,6 @@ function renderTransferScreen() {
           <!-- Local Selection List -->
           <div id="local-batch-section" style="display: none; flex-direction: column; gap: 8px;">
             <div id="local-batch-list" class="file-scroll-area"></div>
-            <button id="btn-send-offer" class="btn btn-primary btn-block">Invia Offerta Batch al Peer</button>
           </div>
         </div>
 
@@ -588,40 +586,45 @@ function renderTransferScreen() {
           <div id="remote-batch-section" style="display: flex; flex-direction: column; gap: 8px;">
             <div id="remote-batch-grid" class="remote-grid">
               <div style="grid-column: 1 / -1; padding: 24px 12px; text-align: center; color: var(--text-muted); font-size: 0.8rem; border: 1px dashed var(--border-color); border-radius: var(--radius);">
-                In attesa che il peer selezioni e invii l'offerta dei suoi file...
+                In attesa che il peer selezioni i suoi file...
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Sticky Bottom Action Dock -->
+      <!-- Fixed Bottom Action Dock (Zero Scroll) -->
       <div class="exchange-dock">
-        <div style="display: flex; flex-direction: column; gap: 8px;">
-          <button id="btn-accept-exchange" class="btn btn-success btn-block" disabled>
-            In attesa dello scambio delle offerte...
-          </button>
-          <span id="transfer-status-text" class="text-sm" style="text-align: center; font-family: var(--font-mono); font-size: 0.78rem;">
-            Seleziona uno o più file per avviare lo scambio.
-          </span>
-        </div>
-
-        <!-- Progress Section -->
-        <div id="progress-section" style="display: none; flex-direction: column; gap: 10px;">
-          <div class="progress-container">
-            <div style="display: flex; justify-content: space-between;" class="text-sm">
-              <span style="font-family: var(--font-mono); font-size: 0.75rem;">Invio Dati Cifrati</span>
-              <span id="send-progress-pct" style="font-family: var(--font-mono); font-weight: 600; font-size: 0.75rem; color: var(--ice-cyan);">0%</span>
-            </div>
-            <div class="progress-bar-bg"><div id="send-progress-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+        <div class="exchange-dock-inner">
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <button id="btn-accept-exchange" class="btn btn-secondary btn-block">
+              <span style="display: flex; align-items: center; justify-content: center; gap: 8px;">
+                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4"></path></svg>
+                Scegli i File da Scambiare
+              </span>
+            </button>
+            <span id="transfer-status-text" class="text-sm" style="text-align: center; font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-muted);">
+              Tocca qui o trascina i file nel riquadro in alto per iniziare.
+            </span>
           </div>
 
-          <div class="progress-container">
-            <div style="display: flex; justify-content: space-between;" class="text-sm">
-              <span style="font-family: var(--font-mono); font-size: 0.75rem;">Ricezione Dati Cifrati</span>
-              <span id="recv-progress-pct" style="font-family: var(--font-mono); font-weight: 600; font-size: 0.75rem; color: var(--ice-cyan);">0%</span>
+          <!-- Progress Section -->
+          <div id="progress-section" style="display: none; flex-direction: column; gap: 10px;">
+            <div class="progress-container">
+              <div style="display: flex; justify-content: space-between;" class="text-sm">
+                <span style="font-family: var(--font-mono); font-size: 0.75rem;">Invio Dati Cifrati</span>
+                <span id="send-progress-pct" style="font-family: var(--font-mono); font-weight: 600; font-size: 0.75rem; color: var(--ice-cyan);">0%</span>
+              </div>
+              <div class="progress-bar-bg"><div id="send-progress-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
             </div>
-            <div class="progress-bar-bg"><div id="recv-progress-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+
+            <div class="progress-container">
+              <div style="display: flex; justify-content: space-between;" class="text-sm">
+                <span style="font-family: var(--font-mono); font-size: 0.75rem;">Ricezione Dati Cifrati</span>
+                <span id="recv-progress-pct" style="font-family: var(--font-mono); font-weight: 600; font-size: 0.75rem; color: var(--ice-cyan);">0%</span>
+              </div>
+              <div class="progress-bar-bg"><div id="recv-progress-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+            </div>
           </div>
         </div>
       </div>
@@ -654,16 +657,28 @@ function renderTransferScreen() {
     }
   };
 
-  document.getElementById('btn-send-offer')!.onclick = () => {
-    sendLocalBatchOffer();
-  };
+  const btnAccept = document.getElementById('btn-accept-exchange') as HTMLButtonElement;
+  btnAccept.onclick = () => {
+    const localCount = localSanitizedFiles.length;
+    const isRemoteComplete = transferProto ? (transferProto as any).remoteOfferComplete : remoteOfferItems.length > 0;
 
-  document.getElementById('btn-accept-exchange')!.onclick = () => {
+    // If local user has no files yet, clicking opens the file selector!
+    if (localCount === 0) {
+      fileInput.click();
+      return;
+    }
+
+    if (!isRemoteComplete) {
+      return;
+    }
+
     try {
       transferProto?.acceptExchange();
-      const btn = document.getElementById('btn-accept-exchange') as HTMLButtonElement;
-      btn.disabled = true;
-      btn.textContent = 'Hai Accettato (In attesa del consenso del peer...)';
+      btnAccept.disabled = true;
+      btnAccept.classList.remove('pulse');
+      btnAccept.textContent = '✓ Hai Confermato · In attesa del peer...';
+      const statusEl = document.getElementById('transfer-status-text');
+      if (statusEl) statusEl.textContent = 'Hai approvato lo scambio. In attesa che anche il peer tocchi Scambia File...';
     } catch (err: any) {
       alert(err.message);
     }
@@ -672,9 +687,20 @@ function renderTransferScreen() {
   // Re-render local and remote if already present
   if (localSanitizedFiles.length > 0) renderLocalBatchList();
   if (remoteOfferItems.length > 0) renderRemoteOfferGrid();
+  updateExchangeDockUI();
 }
 
 async function handleFilesAdded(newFiles: File[]) {
+  const isTransferActive = transferProto && (
+    transferProto.getState() === 'accepted_both' ||
+    transferProto.getState() === 'streaming' ||
+    transferProto.getState() === 'waiting_peer_completion' ||
+    transferProto.getState() === 'completed'
+  );
+  if (isTransferActive) {
+    return;
+  }
+
   if (localSanitizedFiles.length + newFiles.length > MAX_BATCH_FILES) {
     alert(`Puoi selezionare al massimo ${MAX_BATCH_FILES} file per batch.`);
     return;
@@ -694,7 +720,7 @@ async function handleFilesAdded(newFiles: File[]) {
   try {
     for (const file of newFiles) {
       const sanitized = await sanitizeMediaFile(file, 'blurhash');
-      const fileId = sanitized.id || crypto.randomUUID();
+      const fileId = sanitized.id || generateUUID();
       sanitized.id = fileId;
       localRawFiles.set(fileId, file);
       localSanitizedFiles.push(sanitized);
@@ -706,6 +732,11 @@ async function handleFilesAdded(newFiles: File[]) {
   }
 
   renderLocalBatchList();
+  if (localSanitizedFiles.length > 0) {
+    sendLocalBatchOffer();
+  } else {
+    updateExchangeDockUI();
+  }
 }
 
 function renderLocalBatchList() {
@@ -731,6 +762,13 @@ function renderLocalBatchList() {
   totalSizeEl.textContent = `${formatBytes(totalBytes)} / 100 MB`;
 
   listEl.innerHTML = '';
+
+  const isTransferActive = transferProto && (
+    transferProto.getState() === 'accepted_both' ||
+    transferProto.getState() === 'streaming' ||
+    transferProto.getState() === 'waiting_peer_completion' ||
+    transferProto.getState() === 'completed'
+  );
 
   localSanitizedFiles.forEach((file, idx) => {
     const card = document.createElement('div');
@@ -773,6 +811,9 @@ function renderLocalBatchList() {
       toggleBtn.type = 'button';
       toggleBtn.className = `toggle-preview-btn ${file.previewMode === 'thumbnail' ? 'active' : ''}`;
       toggleBtn.innerHTML = file.previewMode === 'thumbnail' ? '👁️ Chiara' : '🔒 Sfocata';
+      if (isTransferActive) {
+        toggleBtn.disabled = true;
+      }
 
       const hintText = document.createElement('span');
       hintText.className = 'toggle-preview-hint';
@@ -784,13 +825,22 @@ function renderLocalBatchList() {
 
       toggleBtn.onclick = async () => {
         const rawFile = localRawFiles.get(file.id!);
-        if (!rawFile) return;
+        if (!rawFile || toggleBtn.disabled) return;
 
-        const newMode = file.previewMode === 'thumbnail' ? 'blurhash' : 'thumbnail';
-        const updated = await sanitizeMediaFile(rawFile, newMode);
-        updated.id = file.id;
-        localSanitizedFiles[idx] = updated;
-        renderLocalBatchList();
+        toggleBtn.disabled = true;
+        toggleBtn.textContent = '...';
+
+        try {
+          const newMode = file.previewMode === 'thumbnail' ? 'blurhash' : 'thumbnail';
+          const updated = await sanitizeMediaFile(rawFile, newMode);
+          updated.id = file.id;
+          localSanitizedFiles[idx] = updated;
+          renderLocalBatchList();
+          sendLocalBatchOffer();
+        } catch (e) {
+          console.error('Errore durante la modifica dell anteprima:', e);
+          renderLocalBatchList();
+        }
       };
 
       actionsBox.appendChild(toggleBtn);
@@ -802,10 +852,15 @@ function renderLocalBatchList() {
     removeBtn.className = 'btn-remove-item';
     removeBtn.innerHTML = '✕';
     removeBtn.title = 'Rimuovi file';
+    if (isTransferActive) {
+      removeBtn.disabled = true;
+    }
     removeBtn.onclick = () => {
+      if (removeBtn.disabled) return;
       localRawFiles.delete(file.id!);
       localSanitizedFiles.splice(idx, 1);
       renderLocalBatchList();
+      sendLocalBatchOffer();
     };
     actionsBox.appendChild(removeBtn);
 
@@ -818,7 +873,12 @@ function renderLocalBatchList() {
 
 function sendLocalBatchOffer() {
   if (localSanitizedFiles.length === 0) {
-    alert('Aggiungi almeno un file per inviare l offerta.');
+    try {
+      transferProto?.clearLocalOffer();
+    } catch (err: any) {
+      console.error('Errore reset offerta locale:', err);
+    }
+    updateExchangeDockUI();
     return;
   }
 
@@ -833,13 +893,82 @@ function sendLocalBatchOffer() {
 
   try {
     transferProto?.prepareAndSendBatchOffer(items);
-    const sendBtn = document.getElementById('btn-send-offer') as HTMLButtonElement;
-    if (sendBtn) {
-      sendBtn.disabled = true;
-      sendBtn.textContent = '✓ Offerta Inviata';
-    }
   } catch (err: any) {
-    alert(err.message);
+    console.error('Errore invio offerta batch:', err);
+  }
+  updateExchangeDockUI();
+}
+
+function updateExchangeDockUI() {
+  const btn = document.getElementById('btn-accept-exchange') as HTMLButtonElement | null;
+  const statusEl = document.getElementById('transfer-status-text');
+  if (!btn || !statusEl) return;
+
+  const localCount = localSanitizedFiles.length;
+  const remoteCount = remoteOfferItems.length;
+  const isRemoteComplete = transferProto ? (transferProto as any).remoteOfferComplete : remoteCount > 0;
+  const currentState = transferProto?.getState() || 'idle';
+
+  // 1. If streaming or completed
+  if (currentState === 'accepted_both' || currentState === 'streaming') {
+    btn.style.display = 'none';
+    const progSec = document.getElementById('progress-section');
+    if (progSec) progSec.style.display = 'flex';
+    statusEl.textContent = 'Trasferimento dati cifrati in corso...';
+    return;
+  }
+
+  // 2. If locally accepted and waiting for peer consent
+  if (currentState === 'accepted_locally') {
+    btn.style.display = 'block';
+    btn.disabled = true;
+    btn.classList.remove('pulse');
+    btn.className = 'btn btn-secondary btn-block';
+    btn.textContent = '✓ Hai Confermato · In attesa del peer...';
+    statusEl.textContent = 'Hai approvato lo scambio. In attesa che anche il peer tocchi Scambia File...';
+    return;
+  }
+
+  btn.style.display = 'block';
+
+  // 3. State: No local files and no remote offer yet
+  if (localCount === 0 && !isRemoteComplete) {
+    btn.disabled = false;
+    btn.classList.remove('pulse');
+    btn.className = 'btn btn-secondary btn-block';
+    btn.innerHTML = `<span style="display: flex; align-items: center; justify-content: center; gap: 8px;"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4"></path></svg> Scegli i File da Scambiare</span>`;
+    statusEl.textContent = 'Tocca qui o trascina i file nel riquadro in alto per iniziare.';
+    return;
+  }
+
+  // 4. State: Local files chosen, but peer has not sent offer yet
+  if (localCount > 0 && !isRemoteComplete) {
+    btn.disabled = true;
+    btn.classList.remove('pulse');
+    btn.className = 'btn btn-secondary btn-block';
+    btn.textContent = `⏳ Offerta inviata (${localCount} file) · In attesa del peer...`;
+    statusEl.textContent = `Hai preparato ${localCount} file. In attesa che il peer scelga i suoi file.`;
+    return;
+  }
+
+  // 5. State: Peer sent offer, but local user has not chosen files yet
+  if (localCount === 0 && isRemoteComplete) {
+    btn.disabled = false;
+    btn.classList.add('pulse');
+    btn.className = 'btn btn-primary btn-block';
+    btn.innerHTML = `<span style="display: flex; align-items: center; justify-content: center; gap: 8px;"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4"></path></svg> Scegli i tuoi File (${remoteCount} dal peer)</span>`;
+    statusEl.textContent = `Il peer ha offerto ${remoteCount} file. Scegli i tuoi file per procedere allo scambio reciproco.`;
+    return;
+  }
+
+  // 6. State: Both have offered! Ready for dual consent!
+  if (localCount > 0 && isRemoteComplete) {
+    btn.disabled = false;
+    btn.classList.add('pulse');
+    btn.className = 'btn btn-success btn-block';
+    btn.textContent = `⚡ Scambia File (${localCount} tuoi ⇆ ${remoteCount} del peer)`;
+    statusEl.textContent = 'Controlla le anteprime del peer qui sopra e tocca qui per avviare lo scambio cifrato.';
+    return;
   }
 }
 

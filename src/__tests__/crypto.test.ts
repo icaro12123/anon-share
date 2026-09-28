@@ -7,7 +7,8 @@ import {
   formatSasWords,
   calculateFileCommitment,
   toHex,
-  fromHex
+  fromHex,
+  generateUUID
 } from '../crypto/keys.ts';
 import { BIP39_ITALIAN } from '../crypto/bip39-it.ts';
 
@@ -78,4 +79,38 @@ describe('Crypto & Key Derivation (Section 3.1 & 3.3)', () => {
     const tamperedSaltCommitment = calculateFileCommitment(tamperedSalt, fileBytes);
     expect(toHex(commitment)).not.toBe(toHex(tamperedSaltCommitment));
   });
+
+  it('generates valid RFC 4122 v4 UUID with cryptographic entropy', () => {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const u1 = generateUUID();
+    const u2 = generateUUID();
+
+    expect(u1).toMatch(uuidRegex);
+    expect(u2).toMatch(uuidRegex);
+    expect(u1).not.toBe(u2);
+
+    // Verify 1000 UUIDs have zero collisions
+    const set = new Set<string>();
+    for (let i = 0; i < 1000; i++) {
+      const u = generateUUID();
+      expect(u).toMatch(uuidRegex);
+      set.add(u);
+    }
+    expect(set.size).toBe(1000);
+  });
+
+  it('falls back seamlessly to getRandomValues when crypto.randomUUID is undefined (HTTP LAN)', () => {
+    const original = crypto.randomUUID;
+    try {
+      // Simulate non-secure HTTP context where crypto.randomUUID is not a function
+      (crypto as any).randomUUID = undefined;
+
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      const u = generateUUID();
+      expect(u).toMatch(uuidRegex);
+    } finally {
+      (crypto as any).randomUUID = original;
+    }
+  });
 });
+

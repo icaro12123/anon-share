@@ -545,4 +545,115 @@ describe('Batch Multi-Media Transfer, Byte Ceilings & Reciprocal Completion Gate
     expect(res.success).toBe(false);
     expect(res.fallbackToBlurhash).toBe(true);
   });
+
+  it('10. live offer update and blur toggle: sends OFFER_RESET, resets peer offer and consent, completes successfully', async () => {
+    const { bobSession, aliceSession } = createPairedNoiseSessions();
+    let bobCompletedFiles: any[] = [];
+    let aliceCompletedFiles: any[] = [];
+    let aliceOffersReceived: any[] = [];
+
+    let alice: TransferProtocol;
+    const bob = new TransferProtocol({
+      isInitiator: true,
+      noiseSession: bobSession,
+      sendRawData: (data) => alice.handleIncomingMessage(data),
+      onBatchCompleted: (files) => {
+        bobCompletedFiles = files;
+      }
+    });
+
+    alice = new TransferProtocol({
+      isInitiator: false,
+      noiseSession: aliceSession,
+      sendRawData: (data) => bob.handleIncomingMessage(data),
+      onBatchOfferReceived: (items) => {
+        aliceOffersReceived.push(items);
+      },
+      onBatchCompleted: (files) => {
+        aliceCompletedFiles = files;
+      }
+    });
+
+    const bobFile1 = makeSampleJpeg(2000);
+    const bobFile2 = makeSamplePng(3000);
+    const aliceFile1 = makeSampleJpeg(2500);
+
+    // Initial offer: Bob sends 2 files with blurhash
+    bob.prepareAndSendBatchOffer([
+      { cleanBytes: bobFile1, mime: 'image/jpeg', previewMode: 'blurhash', blurhash: 'L6PZfSi_.AyE_3t7t7R**0o#DgR4', declaredMax: 5000 },
+      { cleanBytes: bobFile2, mime: 'image/png', previewMode: 'blurhash', blurhash: 'L5H2EC=~p0W=~qj[f6j[00ayoffQ', declaredMax: 5000 }
+    ]);
+
+    alice.prepareAndSendBatchOffer([
+      { cleanBytes: aliceFile1, mime: 'image/jpeg', previewMode: 'blurhash', blurhash: 'L6PZfSi_.AyE_3t7t7R**0o#DgR4', declaredMax: 5000 }
+    ]);
+
+    expect(bob.getState()).toBe('both_offered');
+    expect(alice.getState()).toBe('both_offered');
+
+    // Alice accepts first
+    alice.acceptExchange();
+    expect(alice.getState()).toBe('accepted_locally');
+
+    // Bob now toggles file 2 from blurhash to thumbnail!
+    bob.prepareAndSendBatchOffer([
+      { cleanBytes: bobFile1, mime: 'image/jpeg', previewMode: 'blurhash', blurhash: 'L6PZfSi_.AyE_3t7t7R**0o#DgR4', declaredMax: 5000 },
+      { cleanBytes: bobFile2, mime: 'image/png', previewMode: 'thumbnail', thumbnailDataUrl: 'data:image/jpeg;base64,samplethumb', declaredMax: 5000 }
+    ]);
+
+    // Alice should have received OFFER_RESET (notified with []), and then the updated offer with thumbnail
+    expect(aliceOffersReceived.length).toBeGreaterThanOrEqual(3);
+    const latestAliceOffer = aliceOffersReceived[aliceOffersReceived.length - 1];
+    expect(latestAliceOffer.length).toBe(2);
+    expect(latestAliceOffer[1].previewMode).toBe('thumbnail');
+    expect(latestAliceOffer[1].thumbnailDataUrl).toBe('data:image/jpeg;base64,samplethumb');
+
+    // Alice's prior consent MUST have been invalidated by the offer update
+    expect(alice.getState()).toBe('both_offered');
+
+    // Both now explicitly accept the updated offer
+    bob.acceptExchange();
+    alice.acceptExchange();
+
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(bobCompletedFiles.length).toBe(1);
+    expect(aliceCompletedFiles.length).toBe(2);
+    expect(bob.getState()).toBe('completed');
+    expect(alice.getState()).toBe('completed');
+  });
+
+  it('11. clearLocalOffer: resets batch and notifies remote peer with OFFER_RESET', () => {
+    const { bobSession, aliceSession } = createPairedNoiseSessions();
+    let aliceOffersReceived: any[] = [];
+
+    let alice: TransferProtocol;
+    const bob = new TransferProtocol({
+      isInitiator: true,
+      noiseSession: bobSession,
+      sendRawData: (data) => alice.handleIncomingMessage(data)
+    });
+
+    alice = new TransferProtocol({
+      isInitiator: false,
+      noiseSession: aliceSession,
+      sendRawData: (data) => bob.handleIncomingMessage(data),
+      onBatchOfferReceived: (items) => {
+        aliceOffersReceived.push(items);
+      }
+    });
+
+    bob.prepareAndSendBatchOffer([
+      { cleanBytes: makeSampleJpeg(1000), mime: 'image/jpeg', previewMode: 'blurhash', declaredMax: 2000 }
+    ]);
+
+    expect((alice as any).remoteOfferItems.length).toBe(1);
+
+    // Bob clears offer
+    bob.clearLocalOffer();
+
+    expect((bob as any).localBatch.length).toBe(0);
+    expect((alice as any).remoteOfferItems.length).toBe(0);
+    expect(aliceOffersReceived[aliceOffersReceived.length - 1]).toEqual([]);
+  });
 });

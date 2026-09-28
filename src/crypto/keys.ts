@@ -117,3 +117,64 @@ export function calculateFileCommitment(
   combined.set(cleanFileBytes, salt.length);
   return sha256(combined);
 }
+
+/**
+ * Generates an RFC 4122 compliant UUID v4 with full cryptographic randomness.
+ * Uses crypto.randomUUID() if available (Secure Contexts), and falls back to
+ * crypto.getRandomValues() (guaranteed by W3C in both Secure and Non-Secure Contexts,
+ * including LAN HTTP origins like 192.168.x.x).
+ */
+export function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  // Cryptographically secure fallback using getRandomValues (available in all contexts)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    // Set UUID version to 4 (0100xxxx) in byte 6
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    // Set UUID variant to RFC 4122 (10xxxxxx) in byte 8
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  }
+
+  // Ultra-safe pseudo-random fallback (should never occur in modern browsers)
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/**
+ * Universal clipboard copy supporting non-secure contexts (LAN HTTP).
+ */
+export async function copyToClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {}
+  }
+
+  // Fallback for non-secure contexts (HTTP LAN) using document.execCommand
+  try {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-999999px';
+    textArea.style.top = '-999999px';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(textArea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+

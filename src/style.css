@@ -851,30 +851,30 @@ input[type="url"]:focus {
   object-fit: cover;
 }
 
-/* 4. STICKY BOTTOM EXCHANGE DOCK */
+/* 4. FIXED BOTTOM EXCHANGE DOCK (Always visible in foreground, zero scroll) */
 .exchange-dock {
-  background: rgba(14, 14, 20, 0.88);
-  backdrop-filter: blur(20px) saturate(1.3);
-  -webkit-backdrop-filter: blur(20px) saturate(1.3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  z-index: 100;
+  background: rgba(8, 10, 15, 0.92);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 14px 20px;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.65);
 }
 
-@media (max-width: 679px) {
-  .exchange-dock {
-    position: sticky;
-    bottom: 0;
-    z-index: 10;
-    margin: 0 -6px -6px -6px;
-    border-radius: var(--radius) var(--radius) 0 0;
-    border-bottom: none;
-    padding-bottom: max(16px, env(safe-area-inset-bottom));
-  }
+.exchange-dock-inner {
+  max-width: clamp(840px, 86vw, 1180px);
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 /* Progress Bars */

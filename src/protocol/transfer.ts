@@ -226,9 +226,23 @@ export class TransferProtocol {
       throw new Error(`Dimensione totale dichiarata (${totalDeclared}) supera 100 MB`);
     }
 
+    if (
+      this.state === 'accepted_both' ||
+      this.state === 'streaming' ||
+      this.state === 'completed' ||
+      this.state === 'waiting_peer_completion'
+    ) {
+      throw new Error('Impossibile inviare una nuova offerta durante o dopo il trasferimento');
+    }
+
     this.localBatch = [];
     this.totalBytesToSend = items.reduce((acc, it) => acc + it.cleanBytes.length, 0);
     this.bytesSent = 0;
+    this.localAccepted = false;
+    this.remoteAccepted = false;
+
+    // 0. Notify remote peer to reset any previous offer sequence
+    this.sendControlMessage('OFFER_RESET', {});
 
     // 1. Process items and send OFFER_ITEM sequentially
     for (let i = 0; i < items.length; i++) {
@@ -271,6 +285,34 @@ export class TransferProtocol {
       this.setState('both_offered', 'Offerte scambiate con successo. Verifica anteprime prima di accettare');
     } else {
       this.setState('offer_sent', 'Offerta inviata. In attesa del file della controparte...');
+    }
+  }
+
+  /**
+   * Clears any local offer sequence and notifies remote peer.
+   */
+  public clearLocalOffer(): void {
+    if (
+      this.state === 'accepted_both' ||
+      this.state === 'streaming' ||
+      this.state === 'completed' ||
+      this.state === 'waiting_peer_completion'
+    ) {
+      throw new Error('Impossibile revocare l offerta durante o dopo il trasferimento');
+    }
+
+    this.localBatch = [];
+    this.totalBytesToSend = 0;
+    this.bytesSent = 0;
+    this.localAccepted = false;
+    this.remoteAccepted = false;
+
+    this.sendControlMessage('OFFER_RESET', {});
+
+    if (this.remoteOfferComplete && this.remoteOfferItems.length > 0) {
+      this.setState('offer_received', 'In attesa della tua offerta o conferma...');
+    } else {
+      this.setState('idle', 'In attesa di file...');
     }
   }
 
@@ -414,6 +456,11 @@ export class TransferProtocol {
     }
 
     switch (data.type) {
+      case 'OFFER_RESET': {
+        this.handleOfferReset();
+        break;
+      }
+
       case 'OFFER_ITEM': {
         this.handleOfferItem(data.payload as OfferItemPayload);
         break;
@@ -451,6 +498,31 @@ export class TransferProtocol {
         break;
       }
     }
+  }
+
+  private handleOfferReset(): void {
+    if (
+      this.state === 'accepted_both' ||
+      this.state === 'streaming' ||
+      this.state === 'completed' ||
+      this.state === 'waiting_peer_completion'
+    ) {
+      this.handleError('Impossibile modificare l offerta dopo l avvio del trasferimento');
+      return;
+    }
+
+    this.remoteOfferItems = [];
+    this.remoteOfferComplete = false;
+    this.localAccepted = false;
+    this.remoteAccepted = false;
+
+    if (this.localBatch.length > 0) {
+      this.setState('offer_sent', 'Il peer sta aggiornando la sua offerta...');
+    } else {
+      this.setState('idle', 'In attesa dell offerta del peer...');
+    }
+
+    this.onBatchOfferReceived?.([]);
   }
 
   private handleOfferItem(item: OfferItemPayload): void {
