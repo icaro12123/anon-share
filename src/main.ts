@@ -419,6 +419,11 @@ function onDataChannelEstablished(isInitiator: boolean) {
     }
   });
 
+  // Connect incoming WebRTC DataChannel messages to the TransferProtocol!
+  webrtcConn?.setOnDataMessage((data) => {
+    transferProto?.handleIncomingMessage(data);
+  });
+
   renderTransferScreen();
 }
 
@@ -544,6 +549,8 @@ async function handleFileSelection(file: File) {
 
     if (localSanitizedFile.blurhash) {
       drawBlurhashToCanvas('my-teaser-canvas', localSanitizedFile.blurhash);
+    } else {
+      drawPlaceholderToCanvas('my-teaser-canvas', localSanitizedFile.mime);
     }
 
     // Send Offer via Noise DataChannel
@@ -570,7 +577,26 @@ function updateTeaserDisplay() {
 
   if (remoteFileOffer.blurhash) {
     drawBlurhashToCanvas('peer-teaser-canvas', remoteFileOffer.blurhash);
+  } else {
+    drawPlaceholderToCanvas('peer-teaser-canvas', remoteFileOffer.mime);
   }
+}
+
+function drawPlaceholderToCanvas(canvasId: string, mime: string) {
+  const canvas = document.getElementById(canvasId) as HTMLCanvasElement;
+  if (!canvas) return;
+  canvas.width = 128;
+  canvas.height = 96;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const label = mime.startsWith('video/') ? '🎬 Video' : mime.startsWith('audio/') ? '🎵 Audio' : '📄 File';
+  ctx.fillText(label, canvas.width / 2, canvas.height / 2);
 }
 
 function drawBlurhashToCanvas(canvasId: string, blurhashStr: string) {

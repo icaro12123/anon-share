@@ -46,6 +46,7 @@ export class WebRTCConnection {
   private iceFailureTimer: ReturnType<typeof setTimeout> | null = null;
   private sasTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
   private isClosed: boolean = false;
+  private dataBuffer: Uint8Array[] = [];
 
   constructor(options: WebRTCConnectionOptions) {
     this.isInitiator = options.isInitiator;
@@ -226,7 +227,11 @@ export class WebRTCConnection {
       }
 
       // Deliver data message to protocol layer
-      this.onDataMessage?.(raw);
+      if (this.onDataMessage) {
+        this.onDataMessage(raw);
+      } else {
+        this.dataBuffer.push(raw);
+      }
     };
 
     channel.onerror = (err) => {
@@ -325,6 +330,16 @@ export class WebRTCConnection {
       throw new Error('DataChannel is not open');
     }
     this.dataChannel.send(data as any);
+  }
+
+  public setOnDataMessage(callback: (data: Uint8Array) => void): void {
+    this.onDataMessage = callback;
+    if (this.dataBuffer.length > 0) {
+      for (const item of this.dataBuffer) {
+        callback(item);
+      }
+      this.dataBuffer = [];
+    }
   }
 
   public close(reason?: string): void {
