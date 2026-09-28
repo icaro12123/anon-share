@@ -24,11 +24,15 @@ import {
   MAX_BATCH_FILES,
   validateBatchSelection
 } from './media/magic.ts';
+import { initStarfield, getStarfield } from './ui/starfield.ts';
 
 // PWA Service Worker Registration
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
+
+// Initialize ASCII Starfield Canvas in Background
+initStarfield('bg-starfield');
 
 const appEl = document.getElementById('app')!;
 
@@ -80,19 +84,41 @@ let sasSecondsRemaining = 300; // 5 minutes
 
 // UI Views
 function renderHeader() {
+  const sf = getStarfield();
+  const isFxActive = sf ? sf.isActive() : true;
+
   return `
     <header>
-      <div class="logo-title">
-        <svg class="logo-icon" viewBox="0 0 512 512" fill="none">
-          <circle cx="256" cy="256" r="220" stroke="#00f2fe" stroke-width="24" stroke-dasharray="24 24"/>
-          <path d="M256 140 V256 L340 340" stroke="#4facfe" stroke-width="28" stroke-linecap="round"/>
-          <circle cx="256" cy="256" r="36" fill="#00f2fe"/>
-        </svg>
-        <span>AnonShare</span>
+      <div class="header-top-row">
+        <div class="logo-title">
+          <svg class="logo-icon" viewBox="0 0 512 512" fill="none">
+            <circle cx="256" cy="256" r="220" stroke="var(--primary)" stroke-width="24" stroke-dasharray="24 24"/>
+            <path d="M256 140 V256 L340 340" stroke="var(--primary-light)" stroke-width="28" stroke-linecap="round"/>
+            <circle cx="256" cy="256" r="36" fill="var(--primary)"/>
+          </svg>
+          <span>AnonShare</span>
+        </div>
+        <div class="header-actions">
+          <div class="badge badge-direct">⚡ P2P Direct</div>
+          <button id="btn-toggle-fx" class="fx-toggle-btn ${isFxActive ? '' : 'off'}" title="Attiva/Disattiva Starfield ASCII">
+            <span>${isFxActive ? '✶ FX ON' : '✶ FX OFF'}</span>
+          </button>
+        </div>
       </div>
-      <div class="badge badge-direct">⚡ Modalità Diretta (WebRTC P2P)</div>
     </header>
   `;
+}
+
+function bindHeaderEvents() {
+  const fxBtn = document.getElementById('btn-toggle-fx');
+  if (fxBtn) {
+    fxBtn.onclick = () => {
+      const sf = getStarfield();
+      const active = sf?.toggle() ?? false;
+      fxBtn.classList.toggle('off', !active);
+      fxBtn.innerHTML = `<span>${active ? '✶ FX ON' : '✶ FX OFF'}</span>`;
+    };
+  }
 }
 
 /**
@@ -100,22 +126,14 @@ function renderHeader() {
  */
 function renderTorStaticScreen() {
   appEl.innerHTML = `
-    <header>
-      <div class="logo-title">
-        <svg class="logo-icon" viewBox="0 0 512 512" fill="none">
-          <circle cx="256" cy="256" r="220" stroke="#c084fc" stroke-width="24"/>
-          <circle cx="256" cy="256" r="36" fill="#c084fc"/>
-        </svg>
-        <span>AnonShare</span>
-      </div>
-      <div class="badge badge-tor">🧅 Modalità Tor</div>
-    </header>
+    ${renderHeader()}
 
     <div class="card" style="text-align: center;">
-      <div class="card-title">Modalità Tor Richiesta</div>
-      <div class="alert-info" style="font-size: 1rem; padding: 1.25rem;">
+      <div class="terminal-sub">>_ TOR ONION TRANSPORT</div>
+      <div class="card-title" style="margin-top: 4px;">Modalità Tor Richiesta</div>
+      <div class="alert-info" style="font-size: 0.95rem; padding: 14px;">
         Questo scambio richiede l'app Android in modalità Tor.<br/>
-        Apri il link sull'app <strong>AnonShare</strong>.
+        Apri il link sull'app <strong>AnonShare</strong> per scambiare il batch di file.
       </div>
       <p class="text-sm">
         La versione Web non esegue Tor onion services per preservare il massimo anonimato. Nessuna connessione di rete è stata aperta dal tuo browser.
@@ -123,35 +141,86 @@ function renderTorStaticScreen() {
       <a href="/" class="btn btn-secondary btn-block">Torna alla Modalità Diretta</a>
     </div>
   `;
+  bindHeaderEvents();
 }
 
 function renderHomeScreen() {
   appEl.innerHTML = `
     ${renderHeader()}
 
-    <div class="card">
-      <div class="card-title">Scambio Bilaterale Riservato P2P</div>
-      <p class="text-sm">
-        Scambia file multimediali direttamente tra due browser, senza server di archiviazione, con sanificazione automatica dei metadati, cifratura Noise NNpsk0 e anteprime selettive.
-      </p>
-
-      <div class="alert-warning">
-        <strong>Avviso sulla Privacy di Rete:</strong> In Modalità Diretta, WebRTC connette direttamente i due partecipanti. I peer e i relay Nostr vedono gli indirizzi IP. Per proteggere il tuo indirizzo IP, usa una VPN a livello di sistema operativo.
+    <div class="twin-hub-grid">
+      <!-- Card 1: Crea Stanza -->
+      <div class="twin-card">
+        <div class="twin-card-header">
+          <div class="twin-card-icon">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4"></path></svg>
+          </div>
+          <div>
+            <div class="terminal-sub">>_ NUOVA SESSIONE</div>
+            <div class="card-title" style="font-size: 1.05rem;">Crea Stanza P2P</div>
+          </div>
+        </div>
+        <div class="twin-card-body">
+          <p class="text-sm">
+            Genera un link monouso crittografato end-to-end con protocollo Noise NNpsk0 per scambiare file direttamente dal browser.
+          </p>
+        </div>
+        <button id="btn-create-room" class="btn btn-primary btn-block">
+          Crea Stanza
+        </button>
       </div>
 
-      <button id="btn-create-room" class="btn btn-primary btn-block">
-        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4"></path></svg>
-        Crea Nuova Stanza
-      </button>
+      <!-- Card 2: Partecipa con Link -->
+      <div class="twin-card">
+        <div class="twin-card-header">
+          <div class="twin-card-icon" style="background: rgba(56, 189, 248, 0.12); border-color: rgba(56, 189, 248, 0.3); color: var(--ice-cyan);">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+          </div>
+          <div>
+            <div class="terminal-sub">>_ RICEVI O UNISCITI</div>
+            <div class="card-title" style="font-size: 1.05rem;">Partecipa con Link</div>
+          </div>
+        </div>
+        <div class="twin-card-body">
+          <p class="text-sm">
+            Incolla il link condiviso o il segreto esadecimale a 256-bit per avviare la negoziazione diretta.
+          </p>
+        </div>
+        <div class="input-group">
+          <input type="text" id="input-join-link" placeholder="Incolla link o segreto..." autocomplete="off" spellcheck="false" />
+          <button id="btn-join-room" class="btn btn-secondary" style="min-width: 80px;">Entra</button>
+        </div>
+      </div>
+    </div>
 
-      <div style="text-align: center; color: var(--text-muted); font-size: 0.85rem;">oppure partecipa con un link</div>
-
-      <div class="input-group">
-        <input type="text" id="input-join-link" placeholder="Incolla link o segreto..." />
-        <button id="btn-join-room" class="btn btn-secondary">Entra</button>
+    <!-- Security & Privacy Banner -->
+    <div class="privacy-audit-card">
+      <div class="privacy-audit-header" id="privacy-audit-toggle">
+        <div class="privacy-audit-label">
+          <span style="color: var(--status-success); font-size: 0.8rem; flex-shrink: 0;">●</span>
+          <span class="privacy-text-full">Zero Server · Cifratura Noise NNpsk0 · Bonifica Metadati EXIF</span>
+          <span class="privacy-text-compact">Zero Server · Noise E2EE · No Log</span>
+        </div>
+        <span id="privacy-toggle-icon" class="privacy-toggle-badge">[INFO ▼]</span>
+      </div>
+      <div id="privacy-audit-content" style="display: none; line-height: 1.45; color: var(--text-muted); font-size: 0.78rem; border-top: 1px solid var(--border-subtle); padding-top: 8px; margin-top: 4px;">
+        In Modalità Diretta, WebRTC connette direttamente i due partecipanti. I peer e i relay Nostr vedono gli indirizzi IP durante la negoziazione. Per proteggere il tuo indirizzo IP a livello di rete, usa una VPN di sistema.
       </div>
     </div>
   `;
+
+  bindHeaderEvents();
+
+  const toggle = document.getElementById('privacy-audit-toggle');
+  const content = document.getElementById('privacy-audit-content');
+  const toggleIcon = document.getElementById('privacy-toggle-icon');
+  if (toggle && content && toggleIcon) {
+    toggle.onclick = () => {
+      const isHidden = content.style.display === 'none';
+      content.style.display = isHidden ? 'block' : 'none';
+      toggleIcon.textContent = isHidden ? '[CHIUDI ▲]' : '[INFO ▼]';
+    };
+  }
 
   document.getElementById('btn-create-room')!.onclick = () => {
     const roomSecret = generateRoomSecret();
@@ -215,32 +284,50 @@ function startRoomSession(roomSecret: Uint8Array, isInitiator: boolean) {
 }
 
 function renderWaitingScreen(roomUrl: string, roomTag: string) {
+  const hasNativeShare = typeof navigator !== 'undefined' && !!navigator.share;
+
   appEl.innerHTML = `
     ${renderHeader()}
 
     <div class="card">
-      <div class="card-title">Stanza Creata — In Attesa del Partecipante</div>
-      <p class="text-sm">
-        Condividi questo link temporaneo monouso con la persona con cui desideri scambiare i file:
-      </p>
+      <div>
+        <div class="terminal-sub">>_ HANDSHAKE IN ASCOLTO</div>
+        <div class="card-title" style="margin-top: 4px;">Stanza Creata — In Attesa del Peer</div>
+        <p class="text-sm" style="margin-top: 6px;">
+          Condividi questo link temporaneo monouso con la persona con cui desideri scambiare i file:
+        </p>
+      </div>
 
       <div class="input-group">
         <input type="text" readonly value="${roomUrl}" id="room-url-input" />
         <button class="btn btn-secondary" id="btn-copy-url">Copia</button>
       </div>
 
-      <div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; background: rgba(0,0,0,0.3); border-radius: var(--radius-md);">
-        <div class="pulse" style="width: 12px; height: 12px; border-radius: 50%; background: var(--accent-cyan);"></div>
-        <span class="text-sm" id="handshake-status-text">In ascolto sui relay Nostr pubblici...</span>
+      ${
+        hasNativeShare
+          ? `<button id="btn-share-url" class="btn btn-primary btn-block">
+               <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8m-4-6l-4-4m0 0l-4 4m4-4v12"></path></svg>
+               Condividi Link (WhatsApp, Telegram...)
+             </button>`
+          : ''
+      }
+
+      <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--bg-subtle); border: 1px solid var(--border-color); border-radius: var(--radius);">
+        <div class="pulse" style="width: 10px; height: 10px; border-radius: 50%; background: var(--primary); flex-shrink: 0;"></div>
+        <span class="text-sm" id="handshake-status-text" style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--ice-frost);">
+          In ascolto sui relay Nostr pubblici...
+        </span>
       </div>
 
-      <div class="text-sm" style="font-family: var(--font-mono); font-size: 0.75rem; opacity: 0.7;">
-        Room Tag: ${roomTag.substring(0, 16)}...
+      <div class="text-sm" style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-muted);">
+        ROOM TAG: ${roomTag.substring(0, 16)}...
       </div>
 
       <button id="btn-cancel-session" class="btn btn-danger btn-block">Annulla Stanza</button>
     </div>
   `;
+
+  bindHeaderEvents();
 
   document.getElementById('btn-copy-url')!.onclick = () => {
     navigator.clipboard.writeText(roomUrl);
@@ -248,6 +335,19 @@ function renderWaitingScreen(roomUrl: string, roomTag: string) {
     btn.textContent = 'Copiato!';
     setTimeout(() => (btn.textContent = 'Copia'), 2000);
   };
+
+  const shareBtn = document.getElementById('btn-share-url');
+  if (shareBtn) {
+    shareBtn.onclick = async () => {
+      try {
+        await navigator.share({
+          title: 'AnonShare P2P',
+          text: 'Unisciti alla stanza anonima per lo scambio file:',
+          url: roomUrl
+        });
+      } catch {}
+    };
+  }
 
   document.getElementById('btn-cancel-session')!.onclick = () => {
     resetToHome();
@@ -259,16 +359,19 @@ function renderInitiatingScreen() {
     ${renderHeader()}
 
     <div class="card" style="text-align: center;">
-      <div class="card-title">Connessione alla Stanza...</div>
+      <div class="terminal-sub">>_ HANDSHAKE NOISE NNPSK0</div>
+      <div class="card-title" style="margin-top: 4px;">Connessione alla Stanza...</div>
       <div style="display: flex; justify-content: center; margin: 1.5rem 0;">
-        <div class="pulse" style="width: 24px; height: 24px; border-radius: 50%; background: var(--accent-cyan);"></div>
+        <div class="pulse" style="width: 28px; height: 28px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 16px rgba(99, 102, 241, 0.6);"></div>
       </div>
-      <p class="text-sm" id="handshake-status-text">
+      <p class="text-sm" id="handshake-status-text" style="font-family: var(--font-mono); color: var(--ice-frost);">
         Invio richiesta di handshake cifrato Noise NNpsk0...
       </p>
       <button id="btn-cancel-session" class="btn btn-danger btn-block" style="margin-top: 1rem;">Annulla</button>
     </div>
   `;
+
+  bindHeaderEvents();
 
   document.getElementById('btn-cancel-session')!.onclick = () => {
     resetToHome();
@@ -329,10 +432,18 @@ function renderSasGate(sasWords: string[]) {
     ${renderHeader()}
 
     <div class="card">
-      <div class="card-title" style="color: var(--accent-cyan);">Verifica di Sicurezza SAS</div>
+      <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div>
+          <div class="terminal-sub">>_ SECURITY VAULT</div>
+          <div class="card-title" style="margin-top: 4px;">Verifica di Sicurezza SAS</div>
+        </div>
+        <div class="badge badge-direct" style="font-size: 0.8rem;">
+          ⏱️ <span id="sas-timer" style="color: var(--status-warning-text); font-family: var(--font-mono); font-weight: 700;">5:00</span>
+        </div>
+      </div>
       
       <div class="alert-warning">
-        <strong>Confronto Vocale Fuori Banda:</strong> Confronta queste 6 parole con il tuo interlocutore su un canale diverso da quello in cui hai condiviso il link (a voce o in chiamata).
+        <strong>Confronto Vocale Fuori Banda:</strong> Confronta queste 6 parole a voce o in chiamata prima di procedere. Nessun dato viene scambiato prima della verifica.
       </div>
 
       <div class="sas-grid">
@@ -340,7 +451,7 @@ function renderSasGate(sasWords: string[]) {
           .map(
             (word, idx) => `
           <div class="sas-word-box">
-            <span class="sas-word-num">Parola ${idx + 1}</span>
+            <span class="sas-word-num">PAROLA ${String(idx + 1).padStart(2, '0')}</span>
             <span class="sas-word-val">${word}</span>
           </div>
         `
@@ -348,25 +459,22 @@ function renderSasGate(sasWords: string[]) {
           .join('')}
       </div>
 
-      <div style="display: flex; justify-content: space-between; align-items: center;" class="text-sm">
-        <span>Tempo rimasto per la verifica:</span>
-        <strong id="sas-timer" style="color: var(--accent-amber); font-family: var(--font-mono);">5:00</strong>
-      </div>
-
-      <div style="display: flex; gap: 0.75rem;">
-        <button id="btn-confirm-sas" class="btn btn-success" style="flex: 2;">
+      <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 4px;">
+        <button id="btn-confirm-sas" class="btn btn-success btn-block" style="min-height: 48px;">
           ✓ Confermo Corrispondenza
         </button>
-        <button id="btn-cancel-sas" class="btn btn-danger" style="flex: 1;">
-          ✕ Annulla
+        <button id="btn-cancel-sas" class="btn btn-secondary btn-block">
+          ✕ Annulla Sessione
         </button>
       </div>
 
-      <p class="text-sm" id="webrtc-state-text" style="text-align: center; color: var(--text-muted); margin-top: 0.5rem;">
+      <p class="text-sm" id="webrtc-state-text" style="text-align: center; color: var(--text-muted); margin-top: 4px; font-family: var(--font-mono); font-size: 0.78rem;">
         In attesa della tua conferma...
       </p>
     </div>
   `;
+
+  bindHeaderEvents();
 
   document.getElementById('btn-confirm-sas')!.onclick = () => {
     webrtcConn?.confirmSas();
@@ -429,76 +537,98 @@ function renderTransferScreen() {
   appEl.innerHTML = `
     ${renderHeader()}
 
-    <div class="card">
+    <div class="card" style="padding: 18px;">
       <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span class="card-title">Scambio Diretto P2P Multi-Media</span>
-        <span class="badge badge-success">Connesso E2EE</span>
-      </div>
-
-      <!-- File Dropzone -->
-      <div id="file-dropzone" class="dropzone">
-        <svg width="40" height="40" fill="none" stroke="#00f2fe" stroke-width="1.5" viewBox="0 0 24 24">
-          <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
-        </svg>
         <div>
-          <strong>Trascina file qui</strong> o clicca per selezionare
-          <div class="text-sm" style="margin-top: 0.3rem;">Fino a 50 file (JPEG, PNG, WebP, MP4, WebM, MP3, FLAC - Max 100 MB totali)</div>
+          <div class="terminal-sub">>_ CANALE DIRETTO WEBRTC</div>
+          <span class="card-title">Scambio Bilaterale Multi-Media</span>
         </div>
-        <input type="file" id="file-input" multiple style="display: none;" accept="image/*,video/mp4,video/webm,audio/mpeg,audio/flac" />
+        <span class="badge badge-success">E2EE Connesso</span>
       </div>
 
-      <div id="sanitizing-indicator" style="display: none;" class="alert-info">
-        <div class="pulse">Sanificazione metadati in corso (bonifica EXIF, GPS e rigenerazione canvas)...</div>
-      </div>
-
-      <!-- Local Selection List -->
-      <div id="local-batch-section" style="display: none; flex-direction: column; gap: 0.75rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <strong style="font-size: 0.95rem;">I Tuoi File (<span id="local-files-count">0</span>)</strong>
-          <span id="local-batch-total-size" class="text-sm" style="font-family: var(--font-mono);">0 B / 100 MB</span>
-        </div>
-        <div id="local-batch-list" class="batch-list"></div>
-        <button id="btn-send-offer" class="btn btn-primary btn-block">Invia Offerta Batch al Peer</button>
-      </div>
-
-      <!-- Remote Offer Section -->
-      <div id="remote-batch-section" style="display: none; flex-direction: column; gap: 0.75rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <strong style="font-size: 0.95rem;">File Proposti dal Peer (<span id="remote-files-count">0</span>)</strong>
-          <span id="remote-batch-total-size" class="text-sm" style="font-family: var(--font-mono);"></span>
-        </div>
-        <div id="remote-batch-grid" class="remote-grid"></div>
-      </div>
-
-      <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem;">
-        <button id="btn-accept-exchange" class="btn btn-success btn-block" disabled>
-          In attesa dello scambio delle offerte...
-        </button>
-        <span id="transfer-status-text" class="text-sm" style="text-align: center;">
-          Seleziona uno o più file per avviare lo scambio.
-        </span>
-      </div>
-
-      <!-- Progress Section -->
-      <div id="progress-section" style="display: none; flex-direction: column; gap: 0.75rem;">
-        <div class="progress-container">
-          <div style="display: flex; justify-content: space-between;" class="text-sm">
-            <span>Invio Dati Cifrati</span>
-            <span id="send-progress-pct">0%</span>
+      <!-- Bilateral Deck (Side-by-side on desktop >= 768px, stacked on mobile < 768px) -->
+      <div class="bilateral-deck">
+        <!-- Column 1: Local Outgoing Batch -->
+        <div class="deck-column" id="local-batch-panel">
+          <div class="deck-header">
+            <span class="deck-title">📤 I Tuoi File (<span id="local-files-count">0</span>)</span>
+            <span id="local-batch-total-size" class="text-sm" style="font-family: var(--font-mono); font-size: 0.75rem;">0 B / 100 MB</span>
           </div>
-          <div class="progress-bar-bg"><div id="send-progress-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+
+          <!-- File Dropzone -->
+          <div id="file-dropzone" class="dropzone">
+            <svg width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.75" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+            </svg>
+            <div>
+              <strong style="color: var(--text-primary); font-size: 0.9rem;">Trascina file</strong> o tocca per sfogliare
+              <div class="text-sm" style="font-size: 0.72rem; margin-top: 2px;">Fino a 50 file (Foto, Video, Audio - Max 100 MB)</div>
+            </div>
+            <input type="file" id="file-input" multiple style="display: none;" accept="image/*,video/mp4,video/webm,audio/mpeg,audio/flac" />
+          </div>
+
+          <div id="sanitizing-indicator" style="display: none;" class="alert-info">
+            <div class="pulse">Sanificazione metadati in corso...</div>
+          </div>
+
+          <!-- Local Selection List -->
+          <div id="local-batch-section" style="display: none; flex-direction: column; gap: 8px;">
+            <div id="local-batch-list" class="file-scroll-area"></div>
+            <button id="btn-send-offer" class="btn btn-primary btn-block">Invia Offerta Batch al Peer</button>
+          </div>
         </div>
 
-        <div class="progress-container">
-          <div style="display: flex; justify-content: space-between;" class="text-sm">
-            <span>Ricezione Dati Cifrati</span>
-            <span id="recv-progress-pct">0%</span>
+        <!-- Column 2: Remote Incoming Batch -->
+        <div class="deck-column" id="remote-batch-panel">
+          <div class="deck-header">
+            <span class="deck-title">📥 File del Peer (<span id="remote-files-count">0</span>)</span>
+            <span id="remote-batch-total-size" class="text-sm" style="font-family: var(--font-mono); font-size: 0.75rem;"></span>
           </div>
-          <div class="progress-bar-bg"><div id="recv-progress-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+
+          <div id="remote-batch-section" style="display: flex; flex-direction: column; gap: 8px;">
+            <div id="remote-batch-grid" class="remote-grid">
+              <div style="grid-column: 1 / -1; padding: 24px 12px; text-align: center; color: var(--text-muted); font-size: 0.8rem; border: 1px dashed var(--border-color); border-radius: var(--radius);">
+                In attesa che il peer selezioni e invii l'offerta dei suoi file...
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sticky Bottom Action Dock -->
+      <div class="exchange-dock">
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <button id="btn-accept-exchange" class="btn btn-success btn-block" disabled>
+            In attesa dello scambio delle offerte...
+          </button>
+          <span id="transfer-status-text" class="text-sm" style="text-align: center; font-family: var(--font-mono); font-size: 0.78rem;">
+            Seleziona uno o più file per avviare lo scambio.
+          </span>
+        </div>
+
+        <!-- Progress Section -->
+        <div id="progress-section" style="display: none; flex-direction: column; gap: 10px;">
+          <div class="progress-container">
+            <div style="display: flex; justify-content: space-between;" class="text-sm">
+              <span style="font-family: var(--font-mono); font-size: 0.75rem;">Invio Dati Cifrati</span>
+              <span id="send-progress-pct" style="font-family: var(--font-mono); font-weight: 600; font-size: 0.75rem; color: var(--ice-cyan);">0%</span>
+            </div>
+            <div class="progress-bar-bg"><div id="send-progress-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+          </div>
+
+          <div class="progress-container">
+            <div style="display: flex; justify-content: space-between;" class="text-sm">
+              <span style="font-family: var(--font-mono); font-size: 0.75rem;">Ricezione Dati Cifrati</span>
+              <span id="recv-progress-pct" style="font-family: var(--font-mono); font-weight: 600; font-size: 0.75rem; color: var(--ice-cyan);">0%</span>
+            </div>
+            <div class="progress-bar-bg"><div id="recv-progress-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+          </div>
         </div>
       </div>
     </div>
   `;
+
+  bindHeaderEvents();
 
   const dropzone = document.getElementById('file-dropzone')!;
   const fileInput = document.getElementById('file-input') as HTMLInputElement;
@@ -538,6 +668,10 @@ function renderTransferScreen() {
       alert(err.message);
     }
   };
+
+  // Re-render local and remote if already present
+  if (localSanitizedFiles.length > 0) renderLocalBatchList();
+  if (remoteOfferItems.length > 0) renderRemoteOfferGrid();
 }
 
 async function handleFilesAdded(newFiles: File[]) {
@@ -579,11 +713,15 @@ function renderLocalBatchList() {
   const countEl = document.getElementById('local-files-count');
   const totalSizeEl = document.getElementById('local-batch-total-size');
   const listEl = document.getElementById('local-batch-list');
+  const mobCount = document.getElementById('mobile-local-count');
 
+  if (mobCount) mobCount.textContent = String(localSanitizedFiles.length);
   if (!section || !countEl || !totalSizeEl || !listEl) return;
 
   if (localSanitizedFiles.length === 0) {
     section.style.display = 'none';
+    countEl.textContent = '0';
+    totalSizeEl.textContent = '0 B / 100 MB';
     return;
   }
 
@@ -632,15 +770,16 @@ function renderLocalBatchList() {
     const isImageOrVideo = file.mime.startsWith('image/') || file.mime.startsWith('video/');
     if (isImageOrVideo) {
       const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
       toggleBtn.className = `toggle-preview-btn ${file.previewMode === 'thumbnail' ? 'active' : ''}`;
-      toggleBtn.innerHTML = file.previewMode === 'thumbnail' ? '👁️ Miniatura Chiara' : '🔒 Sfocata (BlurHash)';
+      toggleBtn.innerHTML = file.previewMode === 'thumbnail' ? '👁️ Chiara' : '🔒 Sfocata';
 
       const hintText = document.createElement('span');
       hintText.className = 'toggle-preview-hint';
       if (file.thumbnailFallbackNotice) {
-        hintText.textContent = 'Miniatura troppo complessa (> 8 KB): impostata anteprima sfocata standard';
+        hintText.textContent = 'Anteprima sfocata (> 8 KB)';
       } else {
-        hintText.textContent = "L'altra persona vedrà questa immagine prima di accettare lo scambio";
+        hintText.textContent = "Visibile prima dell'accordo";
       }
 
       toggleBtn.onclick = async () => {
@@ -659,6 +798,7 @@ function renderLocalBatchList() {
     }
 
     const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
     removeBtn.className = 'btn-remove-item';
     removeBtn.innerHTML = '✕';
     removeBtn.title = 'Rimuovi file';
@@ -708,15 +848,26 @@ function renderRemoteOfferGrid() {
   const countEl = document.getElementById('remote-files-count');
   const totalSizeEl = document.getElementById('remote-batch-total-size');
   const gridEl = document.getElementById('remote-batch-grid');
+  const mobCount = document.getElementById('mobile-remote-count');
 
+  if (mobCount) mobCount.textContent = String(remoteOfferItems.length);
   if (!section || !countEl || !totalSizeEl || !gridEl) return;
 
   section.style.display = 'flex';
   countEl.textContent = String(remoteOfferItems.length);
   const totalDeclared = remoteOfferItems.reduce((acc, it) => acc + it.declaredMax, 0);
-  totalSizeEl.textContent = `Tetto max dichiarato: ${formatBytes(totalDeclared)}`;
+  totalSizeEl.textContent = `Tetto max: ${formatBytes(totalDeclared)}`;
 
   gridEl.innerHTML = '';
+
+  if (remoteOfferItems.length === 0) {
+    gridEl.innerHTML = `
+      <div style="grid-column: 1 / -1; padding: 24px 12px; text-align: center; color: var(--text-muted); font-size: 0.8rem; border: 1px dashed var(--border-color); border-radius: var(--radius);">
+        In attesa che il peer selezioni e invii l'offerta dei suoi file...
+      </div>
+    `;
+    return;
+  }
 
   remoteOfferItems.forEach((item, idx) => {
     const card = document.createElement('div');
@@ -744,9 +895,9 @@ function renderRemoteOfferGrid() {
     const badgeLabel = item.previewMode === 'thumbnail' ? '👁️ Chiara' : '🔒 Sfocata';
 
     card.innerHTML = `
-      <div class="text-sm" style="font-weight: 600;">File ${idx + 1}</div>
-      <div class="badge ${item.previewMode === 'thumbnail' ? 'badge-direct' : ''}" style="font-size: 0.72rem;">${badgeLabel}</div>
-      <div class="text-sm" style="font-size: 0.75rem; color: var(--text-muted);">
+      <div class="text-sm" style="font-weight: 600; color: var(--text-primary);">File ${idx + 1}</div>
+      <div class="badge ${item.previewMode === 'thumbnail' ? 'badge-direct' : ''}" style="font-size: 0.7rem; padding: 2px 6px;">${badgeLabel}</div>
+      <div class="text-sm" style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono);">
         ${formatBytes(item.declaredMax)}<br/>${item.mime}
       </div>
     `;
@@ -799,22 +950,25 @@ function renderWaitingReciprocalScreen() {
 
     <div class="card">
       <div class="reciprocal-wait-box">
-        <div class="pulse" style="width: 32px; height: 32px; border-radius: 50%; background: var(--accent-cyan);"></div>
-        <div class="card-title">Ricezione completata. In attesa del completamento del peer...</div>
+        <div class="pulse" style="width: 32px; height: 32px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 16px rgba(99, 102, 241, 0.6);"></div>
+        <div class="terminal-sub">>_ RECIPROCAL LOCK GATE</div>
+        <div class="card-title" style="margin-top: 4px;">Ricezione completata. In attesa del peer...</div>
         <div class="reciprocal-wait-warning">
           Se la connessione cade adesso, nessuno dei due terrà i file.
         </div>
         <p class="text-sm">
-          Questo cancello reciproco riduce l'asimmetria tra i due utenti nel caso di client non manomessi; non è un meccanismo atomico.
-          I tuoi file ricevuti sono custoditi in memoria e verranno sbloccati simultaneamente non appena anche la controparte avrà confermato la ricezione integrale.
+          Questo cancello reciproco riduce l'asimmetria tra i due utenti nel caso di client non manomessi.
+          I tuoi file ricevuti sono custoditi in memoria e verranno sbloccati simultaneamente non appena anche la controparte confermerà la ricezione integrale.
         </p>
       </div>
     </div>
   `;
+  bindHeaderEvents();
 }
 
 function renderCompletedScreen(completedFiles: CompletedFile[]) {
   const blobUrls: string[] = [];
+  const totalBytes = completedFiles.reduce((acc, f) => acc + f.size, 0);
 
   const itemsHtml = completedFiles
     .map((file) => {
@@ -827,17 +981,17 @@ function renderCompletedScreen(completedFiles: CompletedFile[]) {
       } else if (file.mime.startsWith('video/')) {
         mediaEl = `<video controls src="${blobUrl}" class="gallery-media-preview"></video>`;
       } else if (file.mime.startsWith('audio/')) {
-        mediaEl = `<audio controls src="${blobUrl}" style="width: 100%;"></audio>`;
+        mediaEl = `<audio controls src="${blobUrl}" style="width: 100%; margin-top: 8px;"></audio>`;
       }
 
       return `
         <div class="gallery-card">
           ${mediaEl}
-          <div class="text-sm" style="font-family: var(--font-mono); text-align: center;">
-            <strong>${file.name}</strong><br/>
-            ${formatBytes(file.size)} · ${file.mime}
+          <div class="text-sm" style="font-family: var(--font-mono); text-align: center; width: 100%;">
+            <strong style="color: var(--text-primary); font-size: 0.88rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${file.name}</strong>
+            <span style="color: var(--text-muted); font-size: 0.72rem;">${formatBytes(file.size)} · ${file.mime}</span>
           </div>
-          <a href="${blobUrl}" download="${file.name}" class="btn btn-secondary btn-block">
+          <a href="${blobUrl}" download="${file.name}" class="btn btn-secondary btn-block" style="min-height: 42px;">
             Scarica File
           </a>
         </div>
@@ -849,28 +1003,33 @@ function renderCompletedScreen(completedFiles: CompletedFile[]) {
     ${renderHeader()}
 
     <div class="card">
-      <div style="text-align: center; display: flex; flex-direction: column; gap: 0.5rem; align-items: center;">
-        <div class="badge badge-success">✓ Scambio Concluso con Successo</div>
-        <div class="card-title">File Ricevuti e Verificati (${completedFiles.length})</div>
+      <div style="text-align: center; display: flex; flex-direction: column; gap: 8px; align-items: center;">
+        <div class="badge badge-success">✓ Ricezione Conclusa & Verificata</div>
+        <div class="card-title">File Ricevuti (${completedFiles.length})</div>
+        <div class="text-sm" style="font-family: var(--font-mono); color: var(--ice-cyan); font-size: 0.8rem;">
+          Totale trasferito: ${formatBytes(totalBytes)} · Integrità SHA-256 verificata
+        </div>
       </div>
 
       <div class="gallery-grid">
         ${itemsHtml}
       </div>
 
-      <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem;">
-        <button id="btn-download-all" class="btn btn-primary btn-block">
+      <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+        <button id="btn-download-all" class="btn btn-primary btn-block" style="min-height: 48px;">
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
           Scarica Tutti i File (${completedFiles.length})
         </button>
-        <span class="text-sm" style="text-align: center; color: var(--text-muted); font-size: 0.8rem;">
-          Nota: se il browser richiede l'autorizzazione per scaricare più file contemporaneamente, seleziona 'Consenti'.
+        <span class="text-sm" style="text-align: center; color: var(--text-muted); font-size: 0.78rem;">
+          Se il browser richiede l'autorizzazione per download multipli, seleziona 'Consenti'.
         </span>
       </div>
 
-      <button id="btn-done" class="btn btn-secondary btn-block">Chiudi Sessione</button>
+      <button id="btn-done" class="btn btn-secondary btn-block">Nuovo Scambio</button>
     </div>
   `;
+
+  bindHeaderEvents();
 
   document.getElementById('btn-download-all')!.onclick = () => {
     completedFiles.forEach((file, idx) => {
